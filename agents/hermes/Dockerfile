@@ -37,9 +37,22 @@ RUN chmod 755 /usr/local/bin/nemoclaw-decode-proxy
 # Copy blueprint (shared infrastructure)
 COPY nemoclaw-blueprint/ /opt/nemoclaw-blueprint/
 
+# Ensure sandbox user can read all /opt/nemoclaw-* and bridge files.
+# Source files may have restrictive permissions that Docker COPY preserves.
+RUN chmod -R a+rX /opt/nemoclaw-hermes-plugin/ \
+    && chmod -R a+rX /opt/nemoclaw-blueprint/ \
+    && chmod a+r /opt/nemoclaw-generate-config.ts \
+    && chmod -R a+rX /usr/local/lib/nemoclaw-bridges/
+
 # Copy startup script
 COPY agents/hermes/start.sh /usr/local/bin/nemoclaw-start
 RUN chmod 755 /usr/local/bin/nemoclaw-start
+
+# Copy bundled agent memories and skills into the writable state directories.
+# These are baked at build time so the agent knows its capabilities on first run
+# without requiring a network fetch. The sandbox user owns these files.
+COPY --chown=sandbox:sandbox agents/hermes/SOUL.md /sandbox/.hermes-data/SOUL.md
+COPY --chown=sandbox:sandbox agents/hermes/skills/ /sandbox/.hermes-data/skills/
 
 # Build args for config that varies per deployment.
 ARG NEMOCLAW_MODEL=nvidia/nemotron-3-super-120b-a12b
@@ -76,16 +89,8 @@ RUN node --experimental-strip-types /opt/nemoclaw-generate-config.ts
 RUN mkdir -p /sandbox/.hermes-data/plugins/nemoclaw \
     && cp -r /opt/nemoclaw-hermes-plugin/* /sandbox/.hermes-data/plugins/nemoclaw/
 
-# Write a default SOUL.md for the sandboxed agent.
-# Hermes's ensure_hermes_home() expects SOUL.md in the home directory
-# (/sandbox/.hermes/), which is immutable. Write the content to the
-# writable data dir and symlink from the immutable dir.
-RUN printf '%s\n' \
-    'You are a helpful AI assistant running inside an NVIDIA OpenShell sandbox.' \
-    'Your inference is routed through NemoClaw. You have access to terminal,' \
-    'file, and web tools. Be concise and helpful.' \
-    > /sandbox/.hermes-data/memories/SOUL.md \
-    && ln -s /sandbox/.hermes-data/memories/SOUL.md /sandbox/.hermes/SOUL.md
+# Symlink SOUL.md into the immutable home so Hermes's ensure_hermes_home() finds it.
+RUN ln -s /sandbox/.hermes-data/SOUL.md /sandbox/.hermes/SOUL.md
 
 # Lock .hermes via DAC: chown to root so sandbox user cannot modify config.
 # Same pattern as OpenClaw — Landlock provides defense-in-depth.

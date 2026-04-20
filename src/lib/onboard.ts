@@ -778,6 +778,34 @@ function upsertMessagingProviders(tokenDefs) {
 }
 
 /**
+ * Create or update an OpenShell GitHub provider for the sandbox when a
+ * GITHUB_TOKEN or GH_TOKEN is present in the host environment.
+ *
+ * OpenShell's native "github" provider type discovers GITHUB_TOKEN / GH_TOKEN
+ * and injects them as openshell:resolve:env:* placeholders so that gh, git,
+ * and curl commands inside the sandbox can authenticate to GitHub without the
+ * raw token being visible to sandboxed processes.
+ *
+ * @param {string} sandboxName - Used to derive a unique provider name.
+ * @returns {string|null} Provider name if created/updated, null if no token available.
+ */
+function upsertGithubProvider(sandboxName) {
+  const githubToken = (process.env.GITHUB_TOKEN || process.env.GH_TOKEN || "").trim() || null;
+  if (!githubToken) return null;
+  const providerName = `${sandboxName}-github`;
+  const credentialEnv = process.env.GITHUB_TOKEN ? "GITHUB_TOKEN" : "GH_TOKEN";
+  const result = upsertProvider(providerName, "github", credentialEnv, null, {
+    [credentialEnv]: githubToken,
+  });
+  if (!result.ok) {
+    console.error(`  ⚠ Failed to create GitHub provider: ${result.message}`);
+    console.error("    GitHub credential will not be injected into the sandbox.");
+    return null;
+  }
+  return providerName;
+}
+
+/**
  * Check whether an OpenShell provider exists in the gateway.
  *
  * Queries the gateway-level provider registry via `openshell provider get`.
@@ -2089,6 +2117,10 @@ function getNonInteractiveProvider() {
   if (!providerKey) return null;
   const aliases = {
     cloud: "build",
+    // "compatible-endpoint" is the internal OpenShell provider name for the
+    // "custom" / Other OpenAI-compatible option; accept it as a NEMOCLAW_PROVIDER
+    // value so setup scripts can mirror the provider name directly.
+    "compatible-endpoint": "custom",
     nim: "nim-local",
     vllm: "vllm",
     anthropiccompatible: "anthropicCompatible",
@@ -2108,7 +2140,7 @@ function getNonInteractiveProvider() {
   if (!validProviders.has(normalized)) {
     console.error(`  Unsupported NEMOCLAW_PROVIDER: ${providerKey}`);
     console.error(
-      "  Valid values: build, openai, anthropic, anthropicCompatible, gemini, ollama, custom, nim-local, vllm",
+      "  Valid values: build, openai, anthropic, anthropicCompatible, gemini, ollama, custom, compatible-endpoint, nim-local, vllm",
     );
     process.exit(1);
   }
@@ -2890,6 +2922,18 @@ async function createSandbox(
     },
   ].filter(({ envKey }) => !enabledEnvKeys || enabledEnvKeys.has(envKey));
 
+  // Derive OUTLOOK_BASIC_AUTH from CLIENT_ID + CLIENT_SECRET when both are present
+  // but BASIC_AUTH is absent. Handles non-interactive rebuilds where configureMessaging
+  // was skipped — as long as the user sourced their .env, BASIC_AUTH flows through.
+  const _outlookBasicAuthEntry = messagingTokenDefs.find((d) => d.envKey === "OUTLOOK_BASIC_AUTH");
+  if (_outlookBasicAuthEntry && !_outlookBasicAuthEntry.token) {
+    const _clientId = messagingTokenDefs.find((d) => d.envKey === "OUTLOOK_CLIENT_ID")?.token;
+    const _clientSecret = messagingTokenDefs.find((d) => d.envKey === "OUTLOOK_CLIENT_SECRET")?.token;
+    if (_clientId && _clientSecret) {
+      _outlookBasicAuthEntry.token = Buffer.from(`${_clientId}:${_clientSecret}`).toString("base64");
+    }
+  }
+
   if (webSearchConfig) {
     messagingTokenDefs.push({
       name: `${sandboxName}-brave-search`,
@@ -2926,9 +2970,10 @@ async function createSandbox(
     if (!isRecreateSandbox() && !needsProviderMigration && !credentialRotation.changed) {
       if (isNonInteractive()) {
         if (existingSandboxState === "ready") {
-          // Upsert messaging providers even on reuse so credential changes take
-          // effect without requiring a full sandbox recreation.
+          // Upsert messaging and GitHub providers even on reuse so credential
+          // changes take effect without requiring a full sandbox recreation.
           upsertMessagingProviders(messagingTokenDefs);
+          upsertGithubProvider(sandboxName);
           note(`  [non-interactive] Sandbox '${sandboxName}' exists and is ready — reusing it`);
           note("  Pass --recreate-sandbox or set NEMOCLAW_RECREATE_SANDBOX=1 to force recreation.");
           ensureDashboardForward(sandboxName, chatUiUrl);
@@ -2946,6 +2991,7 @@ async function createSandbox(
         const normalizedAnswer = answer.trim().toLowerCase();
         if (normalizedAnswer !== "n" && normalizedAnswer !== "no") {
           upsertMessagingProviders(messagingTokenDefs);
+          upsertGithubProvider(sandboxName);
           ensureDashboardForward(sandboxName, chatUiUrl);
           return sandboxName;
         }
@@ -3114,6 +3160,15 @@ async function createSandbox(
     createArgs.push("--provider", p);
   }
 
+  // Create a GitHub provider when a token is available. OpenShell's native
+  // "github" provider type injects GITHUB_TOKEN/GH_TOKEN as a placeholder so
+  // that gh, git, and curl commands inside the sandbox can authenticate to
+  // GitHub without the raw token being visible to sandboxed processes.
+  const githubProviderName = upsertGithubProvider(sandboxName);
+  if (githubProviderName) {
+    createArgs.push("--provider", githubProviderName);
+  }
+
   console.log(`  Creating sandbox '${sandboxName}' (this takes a few minutes on first run)...`);
   if (webSearchConfig && !getCredential(webSearch.BRAVE_API_KEY_ENV)) {
     console.error("  Brave Search is enabled, but BRAVE_API_KEY is not available in this process.");
@@ -3276,6 +3331,16 @@ async function createSandbox(
     if (braveKey) {
       envArgs.push(formatEnvAssignment(webSearch.BRAVE_API_KEY_ENV, braveKey));
     }
+  }
+  // Pass GATEWAY_ALLOW_ALL_USERS into the sandbox at runtime when the host
+  // has it set. This controls whether Hermes accepts messages from any user
+  // (not just allowlisted IDs) and must be present in the container env when
+  // `hermes gateway run` starts. It is intentionally NOT baked into the image
+  // as a build arg — it is per-deployment and changes without an image rebuild.
+  if (process.env.GATEWAY_ALLOW_ALL_USERS) {
+    envArgs.push(
+      formatEnvAssignment("GATEWAY_ALLOW_ALL_USERS", process.env.GATEWAY_ALLOW_ALL_USERS),
+    );
   }
   const sandboxEnv = buildSubprocessEnv();
   // Remove host-infrastructure credentials that the generic allowlist
@@ -5278,7 +5343,9 @@ async function setupPoliciesWithSelection(sandboxName, options = {}) {
       }
     } else if (policyMode === "suggested" || policyMode === "default" || policyMode === "auto") {
       const envPresets = parsePolicyPresetEnv(process.env.NEMOCLAW_POLICY_PRESETS);
-      if (envPresets.length > 0) chosen = envPresets;
+      // Merge env presets with tier suggestions (additive) so channel-specific presets
+      // from .env stack on top of the tier defaults rather than replacing them.
+      if (envPresets.length > 0) chosen = [...new Set([...suggestions, ...envPresets])];
     } else {
       console.error(`  Unsupported NEMOCLAW_POLICY_MODE: ${policyMode}`);
       console.error("  Valid values: suggested, custom, skip");
@@ -6054,7 +6121,10 @@ async function onboard(opts = {}) {
         policyPresets: [],
       });
     } else {
+      // Never skip policy application when recreating a sandbox — the new sandbox
+      // starts clean and all presets must be re-applied from scratch.
       const resumePolicies =
+        !RECREATE_SANDBOX &&
         resume && sandboxName && arePolicyPresetsApplied(sandboxName, recordedPolicyPresets || []);
       if (resumePolicies) {
         skippedStepMessage("policies", (recordedPolicyPresets || []).join(", "));

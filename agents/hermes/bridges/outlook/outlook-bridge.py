@@ -392,7 +392,22 @@ async def _async_main() -> None:
         _client = client
         await wait_for_hermes()
 
-        ALLOWED_SENDERS = await resolve_allowed_senders()
+        try:
+            ALLOWED_SENDERS = await resolve_allowed_senders()
+        except httpx.RemoteProtocolError:
+            log.error(
+                "Outlook bridge: L7 proxy disconnected during token request. "
+                "OUTLOOK_BASIC_AUTH may not be in the provider — re-run "
+                "`nemoclaw onboard` with Outlook credentials sourced to add it."
+            )
+            sys.exit(1)
+        except httpx.HTTPStatusError as exc:
+            log.error(
+                "Outlook bridge: token request returned HTTP %d. "
+                "Check OUTLOOK_CLIENT_ID / OUTLOOK_CLIENT_SECRET in the provider.",
+                exc.response.status_code,
+            )
+            sys.exit(1)
         jobs = _load_jobs()
         log.info(
             "Bridge ready — polling inbox (%ds active / %ds quiet)",

@@ -13,20 +13,20 @@ network_policies:
         port: 443
         protocol: rest
         enforcement: enforce
-        tls: terminate
         rules:
           - allow: { method: GET, path: "/**" }
+          - allow: { method: POST, path: "/-/npm/v1/security/**" }
+          - allow: { method: POST, path: "/-/npm/v1/whoami" }
       - host: registry.yarnpkg.com
         port: 443
         protocol: rest
         enforcement: enforce
-        tls: terminate
         rules:
           - allow: { method: GET, path: "/**" }
     binaries:
-      - { path: /usr/local/bin/npm* }
-      - { path: /usr/local/bin/npx* }
-      - { path: /usr/local/bin/node* }
-      - { path: /usr/local/bin/yarn* }
-      - { path: /usr/bin/npm* }
-      - { path: /usr/bin/node* }
+      - { path: /usr/local/bin/npm }
+      - { path: /usr/local/bin/npx }
+      - { path: /usr/local/bin/node }
+      - { path: /usr/local/bin/yarn }
+      - { path: /usr/bin/npm }
+      - { path: /usr/bin/node }

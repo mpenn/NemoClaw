@@ -2,45 +2,55 @@
 # SPDX-License-Identifier: Apache-2.0
 
 preset:
-  name: outlook
-  description: "Microsoft Outlook and Graph API access"
+  name: nvidia-forum
+  description: "NVIDIA Developer Forums and Docs (forums.nvidia.com, docs.nvidia.com)"
 
 network_policies:
-  outlook_graph:
-    name: outlook_graph
+  nvidia_forum:
+    name: nvidia_forum
     endpoints:
-      - host: graph.microsoft.com
+      - host: docs.nvidia.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        rules:
+          - allow: { method: GET, path: "/**" }
+          - allow: { method: HEAD, path: "/**" }
+      # Both apex and developer subdomain — one redirects to the other.
+      # Port 80 needed — curl follows HTTP→HTTPS redirects.
+      - host: forums.nvidia.com
+        port: 80
+        protocol: rest
+        enforcement: enforce
+        rules:
+          - allow: { method: GET, path: "/**" }
+          - allow: { method: POST, path: "/**" }
+          - allow: { method: HEAD, path: "/**" }
+      - host: forums.nvidia.com
         port: 443
         protocol: rest
         enforcement: enforce
         rules:
           - allow: { method: GET, path: "/**" }
           - allow: { method: POST, path: "/**" }
-      - host: login.microsoftonline.com
+          - allow: { method: HEAD, path: "/**" }
+      - host: forums.developer.nvidia.com
+        port: 80
+        protocol: rest
+        enforcement: enforce
+        rules:
+          - allow: { method: GET, path: "/**" }
+          - allow: { method: POST, path: "/**" }
+          - allow: { method: HEAD, path: "/**" }
+      - host: forums.developer.nvidia.com
         port: 443
         protocol: rest
         enforcement: enforce
         rules:
           - allow: { method: GET, path: "/**" }
           - allow: { method: POST, path: "/**" }
-      - host: outlook.office365.com
-        port: 443
-        protocol: rest
-        enforcement: enforce
-        rules:
-          - allow: { method: GET, path: "/**" }
-          - allow: { method: POST, path: "/**" }
-      - host: outlook.office.com
-        port: 443
-        protocol: rest
-        enforcement: enforce
-        rules:
-          - allow: { method: GET, path: "/**" }
-          - allow: { method: POST, path: "/**" }
+          - allow: { method: HEAD, path: "/**" }
     binaries:
-      - { path: /usr/local/bin/node }
-      - { path: /usr/bin/node }
-      - { path: /usr/bin/python3 }
+      - { path: /usr/bin/curl }
       - { path: /usr/bin/python3.11 }
-      - { path: /usr/local/bin/python3 }
       - { path: /usr/local/bin/hermes }
