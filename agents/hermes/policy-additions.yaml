@@ -206,3 +206,25 @@ network_policies:
     binaries:
       - { path: /usr/local/bin/node }
       - { path: /usr/bin/python3.11 }
+
+  outlook:
+    name: outlook
+    endpoints:
+      - host: graph.microsoft.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        tls: terminate
+        rules:
+          - allow: { method: GET,   path: "/**" }
+          - allow: { method: POST,  path: "/**" }
+          - allow: { method: PATCH, path: "/**" }
+      - host: login.microsoftonline.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        tls: terminate
+        rules:
+          - allow: { method: POST, path: "/**" }
+    binaries:
+      - { path: /usr/bin/python3.11 }

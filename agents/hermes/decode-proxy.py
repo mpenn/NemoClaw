@@ -59,11 +59,16 @@ async def handle_client(reader, writer):
         up_writer.write(bytes(headers))
         await up_writer.drain()
 
-        # Bidirectional relay
-        await asyncio.gather(
-            _relay(reader, up_writer),
-            _relay(up_reader, writer),
-        )
+        # Bidirectional relay — cancel the peer when either side closes so the
+        # bridge gets an immediate EOF instead of waiting for its read timeout.
+        t1 = asyncio.ensure_future(_relay(reader, up_writer))
+        t2 = asyncio.ensure_future(_relay(up_reader, writer))
+        try:
+            await asyncio.wait([t1, t2], return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for t in (t1, t2):
+                t.cancel()
+            await asyncio.gather(t1, t2, return_exceptions=True)
     except (asyncio.TimeoutError, ConnectionError, OSError):
         pass
     finally:

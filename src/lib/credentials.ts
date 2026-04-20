@@ -86,12 +86,20 @@ export function getCredential(key: string): string | null {
   return value || null;
 }
 
+const CREDENTIAL_DEPENDENTS: Record<string, string[]> = {
+  OUTLOOK_CLIENT_ID: ["OUTLOOK_BASIC_AUTH"],
+  OUTLOOK_CLIENT_SECRET: ["OUTLOOK_BASIC_AUTH"],
+};
+
 export function deleteCredential(key: string): boolean {
   const file = getCredsFile();
   if (!fs.existsSync(file)) return false;
   const creds = loadCredentials();
   if (!Object.prototype.hasOwnProperty.call(creds, key)) return false;
   delete creds[key];
+  for (const dep of CREDENTIAL_DEPENDENTS[key] ?? []) {
+    delete creds[dep];
+  }
   writeConfigFile(file, creds);
   return true;
 }

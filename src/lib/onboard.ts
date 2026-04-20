@@ -2821,9 +2821,19 @@ async function createSandbox(
   const enabledEnvKeys =
     enabledChannels != null
       ? new Set(
-          MESSAGING_CHANNELS.filter((c) => enabledChannels.includes(c.name)).flatMap((c) =>
-            c.appTokenEnvKey ? [c.envKey, c.appTokenEnvKey] : [c.envKey],
-          ),
+          MESSAGING_CHANNELS.filter((c) => enabledChannels.includes(c.name)).flatMap((c) => {
+            const keys = [c.envKey];
+            if (c.appTokenEnvKey) keys.push(c.appTokenEnvKey);
+            if (c.name === "outlook")
+              keys.push(
+                "OUTLOOK_CLIENT_SECRET",
+                "OUTLOOK_TENANT_ID",
+                "OUTLOOK_BOT_MAILBOX",
+                "OUTLOOK_USER_MAILBOX",
+                "OUTLOOK_BASIC_AUTH",
+              );
+            return keys;
+          }),
         )
       : null;
 
@@ -2847,6 +2857,36 @@ async function createSandbox(
       name: `${sandboxName}-telegram-bridge`,
       envKey: "TELEGRAM_BOT_TOKEN",
       token: getMessagingToken("TELEGRAM_BOT_TOKEN"),
+    },
+    {
+      name: `${sandboxName}-outlook-bridge`,
+      envKey: "OUTLOOK_CLIENT_ID",
+      token: getMessagingToken("OUTLOOK_CLIENT_ID"),
+    },
+    {
+      name: `${sandboxName}-outlook-bridge`,
+      envKey: "OUTLOOK_CLIENT_SECRET",
+      token: getMessagingToken("OUTLOOK_CLIENT_SECRET"),
+    },
+    {
+      name: `${sandboxName}-outlook-bridge`,
+      envKey: "OUTLOOK_TENANT_ID",
+      token: getMessagingToken("OUTLOOK_TENANT_ID"),
+    },
+    {
+      name: `${sandboxName}-outlook-bridge`,
+      envKey: "OUTLOOK_BOT_MAILBOX",
+      token: getMessagingToken("OUTLOOK_BOT_MAILBOX"),
+    },
+    {
+      name: `${sandboxName}-outlook-bridge`,
+      envKey: "OUTLOOK_USER_MAILBOX",
+      token: getMessagingToken("OUTLOOK_USER_MAILBOX"),
+    },
+    {
+      name: `${sandboxName}-outlook-bridge`,
+      envKey: "OUTLOOK_BASIC_AUTH",
+      token: getMessagingToken("OUTLOOK_BASIC_AUTH"),
     },
   ].filter(({ envKey }) => !enabledEnvKeys || enabledEnvKeys.has(envKey));
 
@@ -3096,6 +3136,16 @@ async function createSandbox(
           if (envKey === "SLACK_APP_TOKEN")
             return tokensByEnvKey["SLACK_BOT_TOKEN"] ? "slack" : null;
           if (envKey === "TELEGRAM_BOT_TOKEN") return "telegram";
+          if (envKey === "OUTLOOK_CLIENT_ID") return "outlook";
+          // Outlook secondary credentials — deduplicated via Set; client ID is primary.
+          if (
+            envKey === "OUTLOOK_CLIENT_SECRET" ||
+            envKey === "OUTLOOK_TENANT_ID" ||
+            envKey === "OUTLOOK_BOT_MAILBOX" ||
+            envKey === "OUTLOOK_USER_MAILBOX" ||
+            envKey === "OUTLOOK_BASIC_AUTH"
+          )
+            return null;
           return null;
         })
         .filter(Boolean),
@@ -3203,6 +3253,16 @@ async function createSandbox(
   // subprocesses (gateway start, openshell CLI) but the sandbox should
   // never have access to the host's Kubernetes cluster or SSH agent.
   const envArgs = [formatEnvAssignment("CHAT_UI_URL", chatUiUrl)];
+  // Pass messaging channels explicitly so start.sh sees them even if
+  // OpenShell doesn't forward Docker ENV vars to the container runtime.
+  if (activeMessagingChannels.length > 0) {
+    envArgs.push(
+      formatEnvAssignment(
+        "NEMOCLAW_MESSAGING_CHANNELS_B64",
+        encodeDockerJsonArg(activeMessagingChannels),
+      ),
+    );
+  }
   // Pass the configured dashboard port into the sandbox so nemoclaw-start.sh
   // can unconditionally override CHAT_UI_URL even when the Docker image was
   // built with a different default. Without this, the baked-in Docker ENV
@@ -4306,6 +4366,23 @@ const MESSAGING_CHANNELS = [
     appTokenHelp: "Slack API → Your Apps → Basic Information → App-Level Tokens (xapp-...).",
     appTokenLabel: "Slack App Token (Socket Mode)",
   },
+  {
+    name: "outlook",
+    envKey: "OUTLOOK_CLIENT_ID",
+    // Channels with multiple required credentials list them here.
+    // isChannelFullyConfigured checks all keys before suggesting the network policy preset.
+    // Single-credential channels omit this and fall back to checking envKey alone.
+    requiredEnvKeys: [
+      "OUTLOOK_CLIENT_ID",
+      "OUTLOOK_TENANT_ID",
+      "OUTLOOK_CLIENT_SECRET",
+      "OUTLOOK_BOT_MAILBOX",
+      "OUTLOOK_USER_MAILBOX",
+    ],
+    description: "Microsoft Outlook email bridge (sidecar)",
+    help: "Azure portal → App registrations → your app → Overview. Copy Application (client) ID.",
+    label: "Outlook Client ID",
+  },
 ];
 
 async function setupMessagingChannels() {
@@ -4349,7 +4426,7 @@ async function setupMessagingChannels() {
       output.write(`    [${i + 1}] ${marker} ${ch.name} — ${ch.description}${status}\n`);
     });
     output.write("\n");
-    output.write("  Press 1-3 to toggle, Enter when done: ");
+    output.write("  Press 1-4 to toggle, Enter when done: ");
   };
 
   showList();
@@ -4489,9 +4566,53 @@ async function setupMessagingChannels() {
         }
       }
     }
+    // Outlook-specific: prompt for the three additional credentials and allowed senders
+    if (ch.name === "outlook") {
+      for (const [envKey, label, isSecret] of [
+        ["OUTLOOK_TENANT_ID",    "Outlook Tenant ID (Directory/tenant ID from Azure portal)", true],
+        ["OUTLOOK_CLIENT_SECRET", "Outlook Client Secret",                                    true],
+        ["OUTLOOK_BOT_MAILBOX",   "Bot shared mailbox address (e.g. mybot@example.onmicrosoft.com)", false],
+        ["OUTLOOK_USER_MAILBOX",  "Your personal mailbox address (reply recipient)",           false],
+      ] as [string, string, boolean][]) {
+        const existing = getMessagingToken(envKey);
+        if (existing) {
+          process.env[envKey] = existing;
+        } else {
+          const val = normalizeCredentialValue(
+            await prompt(`  ${label}: `, { secret: isSecret }),
+          );
+          if (val) {
+            saveCredential(envKey, val);
+            process.env[envKey] = val;
+            console.log(`  ✓ outlook ${envKey} saved`);
+          }
+        }
+      }
+      // Always recompute OUTLOOK_BASIC_AUTH = base64(client_id:client_secret) so
+      // rotating either component credential is reflected immediately.
+      const clientId = process.env.OUTLOOK_CLIENT_ID || getMessagingToken("OUTLOOK_CLIENT_ID") || "";
+      const clientSecret =
+        process.env.OUTLOOK_CLIENT_SECRET || getMessagingToken("OUTLOOK_CLIENT_SECRET") || "";
+      if (clientId && clientSecret) {
+        const basicAuth = Buffer.from(`${clientId}:${clientSecret}`).toString("base64");
+        saveCredential("OUTLOOK_BASIC_AUTH", basicAuth);
+        process.env.OUTLOOK_BASIC_AUTH = basicAuth;
+      }
+    }
   }
   console.log("");
   return selected;
+}
+
+// Checks all credentials a channel needs to be operational, not just the
+// primary envKey. Channels declare additional requirements via requiredEnvKeys
+// in MESSAGING_CHANNELS — omitting it falls back to checking envKey alone,
+// keeping single-credential channels (telegram, discord, slack) unchanged.
+function isChannelFullyConfigured(channel) {
+  const def = MESSAGING_CHANNELS.find((c) => c.name === channel);
+  if (!def) return false;
+  const keysToCheck = (def as any).requiredEnvKeys ?? [def.envKey];
+  return keysToCheck.every((k) => getCredential(k) || process.env[k]);
 }
 
 function getSuggestedPolicyPresets({ enabledChannels = null, webSearchConfig = null } = {}) {
@@ -4499,21 +4620,21 @@ function getSuggestedPolicyPresets({ enabledChannels = null, webSearchConfig = n
   const usesExplicitMessagingSelection = Array.isArray(enabledChannels);
 
   const maybeSuggestMessagingPreset = (channel, envKey) => {
+    if (!isChannelFullyConfigured(channel)) return;
     if (usesExplicitMessagingSelection) {
       if (enabledChannels.includes(channel)) suggestions.push(channel);
       return;
     }
-    if (getCredential(envKey) || process.env[envKey]) {
-      suggestions.push(channel);
-      if (process.stdout.isTTY && !isNonInteractive() && process.env.CI !== "true") {
-        console.log(`  Auto-detected: ${envKey} -> suggesting ${channel} preset`);
-      }
+    suggestions.push(channel);
+    if (process.stdout.isTTY && !isNonInteractive() && process.env.CI !== "true") {
+      console.log(`  Auto-detected: ${envKey} -> suggesting ${channel} preset`);
     }
   };
 
   maybeSuggestMessagingPreset("telegram", "TELEGRAM_BOT_TOKEN");
   maybeSuggestMessagingPreset("slack", "SLACK_BOT_TOKEN");
   maybeSuggestMessagingPreset("discord", "DISCORD_BOT_TOKEN");
+  maybeSuggestMessagingPreset("outlook", "OUTLOOK_CLIENT_ID");
 
   if (webSearchConfig) suggestions.push("brave");
 

@@ -76,7 +76,8 @@ messaging_platforms:
     - telegram
     - discord
     - slack
-  # Future: whatsapp, signal, matrix, mattermost, email, etc.
+    - outlook  # sidecar bridge (not a native Hermes platform)
+  # Future: whatsapp, signal, matrix, mattermost, etc.
   # Each needs a network policy entry before enabling.
 
 # ── Inference ───────────────────────────────────────────────────

@@ -194,16 +194,28 @@ harden_hermes_symlinks() {
   fi
 }
 
+_has_outlook_channel() {
+  # Primary: OUTLOOK_CLIENT_ID is injected by OpenShell providers at runtime,
+  # making it a reliable signal that the Outlook channel was configured.
+  # Secondary: NEMOCLAW_MESSAGING_CHANNELS_B64 (baked at build time, may not
+  # be present if OpenShell doesn't forward Docker ENV vars).
+  [ -n "${OUTLOOK_CLIENT_ID:-}" ] || \
+    echo "${NEMOCLAW_MESSAGING_CHANNELS_B64:-W10=}" | \
+      python3 -c "import sys,base64,json; d=json.loads(base64.b64decode(sys.stdin.read().strip())); sys.exit(0 if 'outlook' in d else 1)" 2>/dev/null
+}
+
 configure_messaging_channels() {
   # Channel entries are baked into config.yaml at image build time via
   # NEMOCLAW_MESSAGING_CHANNELS_B64. Placeholder tokens flow through to
   # the L7 proxy for rewriting at egress.
-  [ -n "${TELEGRAM_BOT_TOKEN:-}" ] || [ -n "${DISCORD_BOT_TOKEN:-}" ] || [ -n "${SLACK_BOT_TOKEN:-}" ] || return 0
+  [ -n "${TELEGRAM_BOT_TOKEN:-}" ] || [ -n "${DISCORD_BOT_TOKEN:-}" ] || \
+    [ -n "${SLACK_BOT_TOKEN:-}" ] || _has_outlook_channel || return 0
 
   echo "[channels] Messaging channels active (baked at build time):" >&2
   [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && echo "[channels]   telegram" >&2
   [ -n "${DISCORD_BOT_TOKEN:-}" ] && echo "[channels]   discord" >&2
   [ -n "${SLACK_BOT_TOKEN:-}" ] && echo "[channels]   slack" >&2
+  _has_outlook_channel && echo "[channels]   outlook (bridge)" >&2
   return 0
 }
 
@@ -263,14 +275,37 @@ start_decode_proxy() {
 }
 
 # Forward SIGTERM/SIGINT to child processes for graceful shutdown.
+OUTLOOK_BRIDGE_PID=""
+
 cleanup() {
   echo "[gateway] received signal, forwarding to children..." >&2
   local gateway_status=0
   kill -TERM "$GATEWAY_PID" 2>/dev/null || true
   [ -n "${SOCAT_PID:-}" ] && kill -TERM "$SOCAT_PID" 2>/dev/null || true
   [ -n "${DECODE_PROXY_PID:-}" ] && kill -TERM "$DECODE_PROXY_PID" 2>/dev/null || true
+  [ -n "${OUTLOOK_BRIDGE_PID:-}" ] && kill -TERM "$OUTLOOK_BRIDGE_PID" 2>/dev/null || true
   wait "$GATEWAY_PID" 2>/dev/null || gateway_status=$?
   exit "$gateway_status"
+}
+
+start_outlook_bridge() {
+  if ! _has_outlook_channel; then
+    return 0
+  fi
+  [ -f /usr/local/lib/nemoclaw-bridges/outlook/outlook-bridge.py ] || { echo "[outlook-bridge] bridge script not found, skipping" >&2; return 0; }
+  local bridge_env
+  bridge_env="HERMES_HOME=${HERMES_WRITABLE} HTTPS_PROXY=http://127.0.0.1:${DECODE_PROXY_PORT} HTTP_PROXY=http://127.0.0.1:${DECODE_PROXY_PORT} https_proxy=http://127.0.0.1:${DECODE_PROXY_PORT} http_proxy=http://127.0.0.1:${DECODE_PROXY_PORT}"
+  if [ "$(id -u)" -eq 0 ]; then
+    # shellcheck disable=SC2086
+    nohup env ${bridge_env} gosu sandbox python3 /usr/local/lib/nemoclaw-bridges/outlook/outlook-bridge.py \
+      >>/tmp/outlook-bridge.log 2>&1 &
+  else
+    # shellcheck disable=SC2086
+    nohup env ${bridge_env} python3 /usr/local/lib/nemoclaw-bridges/outlook/outlook-bridge.py \
+      >>/tmp/outlook-bridge.log 2>&1 &
+  fi
+  OUTLOOK_BRIDGE_PID=$!
+  echo "[outlook-bridge] started (pid ${OUTLOOK_BRIDGE_PID})" >&2
 }
 
 # ── Proxy environment ────────────────────────────────────────────
@@ -363,6 +398,7 @@ if [ "$(id -u)" -ne 0 ]; then
   echo "[gateway] hermes gateway launched (pid $GATEWAY_PID)" >&2
   trap cleanup SIGTERM SIGINT
   start_socat_forwarder
+  start_outlook_bridge
   print_dashboard_urls
 
   wait "$GATEWAY_PID"
@@ -404,6 +440,7 @@ GATEWAY_PID=$!
 echo "[gateway] hermes gateway launched as 'gateway' user (pid $GATEWAY_PID)" >&2
 trap cleanup SIGTERM SIGINT
 start_socat_forwarder
+start_outlook_bridge
 print_dashboard_urls
 
 # Keep container running by waiting on the gateway process.
