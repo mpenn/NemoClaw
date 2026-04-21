@@ -1,3 +1,8 @@
+---
+name: slack-channel-summarizer
+description: Read and summarize messages from a Slack channel using the Slack Web API.
+---
+
 # slack-channel-summarizer
 
 Read and summarize messages from a Slack channel using the Slack Web API.
@@ -16,18 +21,10 @@ Read and summarize messages from a Slack channel using the Slack Web API.
 
 ## Procedure
 
-### 1. Find the channel ID
+### 1. Fetch messages (newest-first)
 
-Prefer `users.conversations` over `conversations.list` — it is faster and does not
-require the `channels:read` scope for private channels:
-
-```bash
-curl -s "https://api.slack.com/api/users.conversations?types=public_channel,private_channel&limit=200" \
-     -H "Authorization: Bearer openshell:resolve:env:SLACK_BOT_TOKEN" \
-  | python3 -c "import sys,json; [print(c['id'], c['name']) for c in json.load(sys.stdin)['channels']]"
-```
-
-### 2. Fetch messages (newest-first)
+If you already know the channel ID (e.g., from a Slack mention like `<#C0ALN454EH4>`),
+use it directly — skip the lookup below.
 
 Use `conversations.history`. Messages are returned newest-first; paginate
 with `cursor` when there are more than 200 messages in your window:
@@ -39,7 +36,15 @@ curl -s "https://api.slack.com/api/conversations.history?channel=CHANNEL_ID&limi
 
 To restrict to a time range, add `oldest=<unix_ts>` and/or `latest=<unix_ts>`.
 
-### 3. Resolve user IDs to display names
+If you do **not** know the channel ID, find it first with `users.conversations`:
+
+```bash
+curl -s "https://api.slack.com/api/users.conversations?types=public_channel,private_channel&limit=200" \
+     -H "Authorization: Bearer openshell:resolve:env:SLACK_BOT_TOKEN" \
+  | python3 -c "import sys,json; [print(c['id'], c['name']) for c in json.load(sys.stdin)['channels']]"
+```
+
+### 2. Resolve user IDs to display names
 
 Message objects contain `user` fields with opaque IDs (e.g. `U01AB2CD3`).
 Resolve them one at a time with `users.info`:
@@ -50,7 +55,7 @@ curl -s "https://api.slack.com/api/users.info?user=U01AB2CD3" \
   | python3 -c "import sys,json; u=json.load(sys.stdin)['user']; print(u['real_name'])"
 ```
 
-### 4. Present the summary
+### 3. Present the summary
 
 Organise the output as a structured summary:
 - Date range covered
@@ -61,9 +66,11 @@ Organise the output as a structured summary:
 ## Pitfalls
 
 - `conversations.list` with `types=private_channel` requires the `groups:read` scope and
-  is slow on large workspaces — prefer `users.conversations` (step 1).
+  is slow on large workspaces — prefer `users.conversations` if you need to look up an ID.
 - The bot must be **invited** to a channel before it can read its history.
 - `search.messages` requires a **user** token, not a bot token — it will not work here.
+- `users.conversations` requires the `groups:read` scope to return private channels; if
+  the call fails with `missing_scope`, use the channel ID from the Slack mention directly.
 - Messages are returned **newest-first**; reverse the array before summarising
   chronologically.
 - **Fetch at most 3 pages** (≤ 150 messages total with `limit=50`). Stop after 3 pages

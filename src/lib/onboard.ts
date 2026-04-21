@@ -1273,7 +1273,7 @@ function shouldRequireResponsesToolCalling(provider) {
 // getCurlTimingArgs() because validation must not hang the wizard for a
 // minute on a misbehaving model. See issue #1601 (Bug 3).
 function getValidationProbeCurlArgs() {
-  return ["--connect-timeout", "10", "--max-time", "15"];
+  return ["--connect-timeout", "10", "--max-time", "60"];
 }
 
 function probeResponsesToolCalling(endpointUrl, model, apiKey) {

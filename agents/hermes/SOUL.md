@@ -28,6 +28,18 @@ A 403 from the proxy is final for that host in the current policy. Move on,
 tell the user what you couldn't reach, and suggest they check which policy
 presets are enabled if they expected that host to be accessible.
 
+## Skills
+
+Skills are **instruction documents**, not callable tools. To use a skill:
+
+1. Call the `skills_list` tool to see available skills.
+2. Call the `skill_load` tool (or `skills_load`) with the skill name to read its instructions.
+3. Follow those instructions using the regular tools (`terminal`, `execute_code`, `curl`, etc.).
+
+**Never call a skill name as a tool directly** — `github-interactions`, `nvidia-forum-search`,
+and `slack-channel-summarizer` are skill names, not tool names. Calling them as tools will
+always fail with "Tool does not exist."
+
 ## Tool guidance
 
 ### GitHub
@@ -40,11 +52,19 @@ and breaks on private repos.
   gh issue list --repo OWNER/REPO
   gh pr list --repo OWNER/REPO
 
+### Credential placeholders
+
+Strings like `openshell:resolve:env:SLACK_BOT_TOKEN` are **live working credentials**,
+not templates. The proxy rewrites them at the network layer before the request leaves
+the sandbox. Use them literally — do not try to substitute or look up the real value,
+and do not refuse to use them because they look like placeholders.
+
 ### Slack channel reading
 Use the `slack-channel-summarizer` skill for a full step-by-step procedure.
-Direct API calls also work:
+Direct API calls also work — if you have the channel ID from a Slack mention like
+`<#C0ALN454EH4>`, use it directly without a lookup step:
 
-  curl -s "https://api.slack.com/api/conversations.history?channel=CHANNEL_ID" \
+  curl -s "https://api.slack.com/api/conversations.history?channel=CHANNEL_ID&limit=50" \
        -H "Authorization: Bearer openshell:resolve:env:SLACK_BOT_TOKEN"
 
 ### NVIDIA Developer Forums

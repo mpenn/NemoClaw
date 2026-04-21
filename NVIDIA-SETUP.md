@@ -138,11 +138,12 @@ NEMOCLAW_POLICY_PRESETS=npm,pypi,huggingface,brew,brave,slack,github,nvidia-foru
 ## 5. Run Onboard
 
 Source `.env` before running — the NemoClaw CLI reads all configuration from
-`process.env` and does not load `.env` automatically.
+`process.env` and does not load `.env` automatically. The `set -a` flag is
+required so variables are exported to child processes (plain `source .env`
+sets shell variables but does not export them to `node`).
 
 ```bash
-set -o allexport && source .env && set +o allexport
-node bin/nemoclaw.js onboard --yes
+set -a && source .env && set +a && node bin/nemoclaw.js onboard --non-interactive
 ```
 
 This will:
@@ -158,8 +159,7 @@ image is cached.
 To rebuild after changing `.env` or any agent file:
 
 ```bash
-set -o allexport && source .env && set +o allexport
-node bin/nemoclaw.js nemoclaw-hermes rebuild --yes
+set -a && source .env && set +a && node bin/nemoclaw.js nemoclaw-hermes rebuild --yes
 ```
 
 ---
