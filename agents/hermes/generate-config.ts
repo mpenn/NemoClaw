@@ -56,7 +56,7 @@ function main(): void {
       timeout: 180,
     },
     agent: {
-      max_turns: 60,
+      max_turns: 30,
       reasoning_effort: "medium",
     },
     memory: {

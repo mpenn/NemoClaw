@@ -66,7 +66,9 @@ Organise the output as a structured summary:
 - `search.messages` requires a **user** token, not a bot token — it will not work here.
 - Messages are returned **newest-first**; reverse the array before summarising
   chronologically.
-- For channels with more than 200 messages, loop using the `response_metadata.next_cursor`
-  field until it is empty.
+- **Fetch at most 3 pages** (≤ 150 messages total with `limit=50`). Stop after 3 pages
+  regardless of whether `next_cursor` is present. Summarise what you have — do not
+  paginate indefinitely. If the user asked for a specific time range use `oldest=` and
+  `latest=` to target it directly instead of paginating forward from now.
 - Use the placeholder string `openshell:resolve:env:SLACK_BOT_TOKEN` literally in the
   `Authorization` header — do not substitute the real token value.
