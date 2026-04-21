@@ -123,6 +123,10 @@ function main(): void {
       envLines.push(`${ALLOWED_USERS_ENV[ch]}=${ids.map(String).join(",")}`);
     }
   }
+  // Suppress the "no home channel" first-message prompt without setting a real channel.
+  if (msgChannels.includes("slack")) {
+    envLines.push("SLACK_HOME_CHANNEL=none");
+  }
 
   const envPath = join(homedir(), ".hermes", ".env");
   writeFileSync(envPath, envLines.length > 0 ? envLines.join("\n") + "\n" : "");

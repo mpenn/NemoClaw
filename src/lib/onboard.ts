@@ -4782,18 +4782,16 @@ async function _setupPolicies(sandboxName, options = {}) {
       process.exit(1);
     }
     note(`  [non-interactive] Applying policy presets: ${selectedPresets.join(", ")}`);
-    for (const name of selectedPresets) {
-      for (let attempt = 0; attempt < 3; attempt += 1) {
-        try {
-          policies.applyPreset(sandboxName, name);
-          break;
-        } catch (err) {
-          const message = err && err.message ? err.message : String(err);
-          if (!message.includes("sandbox not found") || attempt === 2) {
-            throw err;
-          }
-          sleep(2);
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        policies.applyPresets(sandboxName, selectedPresets);
+        break;
+      } catch (err) {
+        const message = err && err.message ? err.message : String(err);
+        if (!message.includes("sandbox not found") || attempt === 2) {
+          throw err;
         }
+        sleep(2);
       }
     }
   } else {
@@ -4827,14 +4825,10 @@ async function _setupPolicies(sandboxName, options = {}) {
         .split(",")
         .map((s) => s.trim())
         .filter(Boolean);
-      for (const name of selected) {
-        policies.applyPreset(sandboxName, name);
-      }
+      policies.applyPresets(sandboxName, selected);
     } else {
       // Apply suggested
-      for (const name of suggestions) {
-        policies.applyPreset(sandboxName, name);
-      }
+      policies.applyPresets(sandboxName, suggestions);
     }
   }
 
@@ -5313,9 +5307,9 @@ async function setupPoliciesWithSelection(sandboxName, options = {}) {
       process.exit(1);
     }
     note(`  [resume] Reapplying policy presets: ${chosen.join(", ")}`);
-    for (const name of chosen) {
-      if (applied.includes(name)) continue;
-      policies.applyPreset(sandboxName, name);
+    const unapplied = chosen.filter((name) => !applied.includes(name));
+    if (unapplied.length > 0) {
+      policies.applyPresets(sandboxName, unapplied);
     }
     return chosen;
   }
@@ -5367,18 +5361,16 @@ async function setupPoliciesWithSelection(sandboxName, options = {}) {
       process.exit(1);
     }
     note(`  [non-interactive] Applying policy presets: ${chosen.join(", ")}`);
-    for (const name of chosen) {
-      for (let attempt = 0; attempt < 3; attempt += 1) {
-        try {
-          policies.applyPreset(sandboxName, name);
-          break;
-        } catch (err) {
-          const message = err && err.message ? err.message : String(err);
-          if (!message.includes("sandbox not found") || attempt === 2) {
-            throw err;
-          }
-          sleep(2);
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        policies.applyPresets(sandboxName, chosen);
+        break;
+      } catch (err) {
+        const message = err && err.message ? err.message : String(err);
+        if (!message.includes("sandbox not found") || attempt === 2) {
+          throw err;
         }
+        sleep(2);
       }
     }
     return chosen;
@@ -5424,12 +5416,10 @@ async function setupPoliciesWithSelection(sandboxName, options = {}) {
     }
   }
 
-  for (const name of newlySelected) {
+  if (newlySelected.length > 0) {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
-        // Pass access mode so applyPreset can distinguish read vs read-write
-        // when preset infrastructure supports it.
-        policies.applyPreset(sandboxName, name, { access: accessByName[name] });
+        policies.applyPresets(sandboxName, newlySelected);
         break;
       } catch (err) {
         const message = err && err.message ? err.message : String(err);
