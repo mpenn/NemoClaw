@@ -16,11 +16,24 @@ RUN (apt-get remove --purge -y gcc gcc-12 g++ g++-12 cpp cpp-12 make \
     && apt-get autoremove --purge -y \
     && rm -rf /var/lib/apt/lists/*
 
+# Install GitHub CLI (gh) — not in the base image.
+# GH_TOKEN is set below so gh authenticates via the OpenShell provider pipeline.
+RUN mkdir -p /etc/apt/keyrings \
+    && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+       -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+       > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends gh \
+    && rm -rf /var/lib/apt/lists/*
+
 # Hermes v2026.4.13+ auto-detects HTTPS_PROXY and skips fallback-IP
 # transport when a proxy is present. The sandbox proxy chain
 # (decode-proxy → OpenShell L7 proxy) handles credential placeholder
 # rewriting and hostname-based policy enforcement. No monkey patch needed.
-ENV HERMES_TELEGRAM_DISABLE_FALLBACK_IPS=1
+ENV HERMES_TELEGRAM_DISABLE_FALLBACK_IPS=1 \
+    GH_TOKEN=openshell:resolve:env:GITHUB_TOKEN
 
 # Copy NemoClaw plugin for Hermes (Python-based)
 COPY agents/hermes/plugin/ /opt/nemoclaw-hermes-plugin/
