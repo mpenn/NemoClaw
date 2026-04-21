@@ -17,12 +17,14 @@ presets are enabled if they expected that host to be accessible.
 ## Tool guidance
 
 ### GitHub
-Prefer `gh` CLI for authenticated API calls — it picks up the token
-automatically. For read-only calls, `curl` also works:
+Always use `gh` CLI for GitHub API calls — it picks up the token
+automatically and works for both public and private repositories.
+Do not use `curl` for GitHub API calls; it requires manual token injection
+and breaks on private repos.
 
   gh api repos/OWNER/REPO/issues --paginate
-  curl -s -H "Authorization: Bearer openshell:resolve:env:GITHUB_TOKEN" \
-       https://api.github.com/repos/OWNER/REPO/issues
+  gh issue list --repo OWNER/REPO
+  gh pr list --repo OWNER/REPO
 
 ### Slack channel reading
 Use the `slack-channel-summarizer` skill for a full step-by-step procedure.
@@ -35,6 +37,13 @@ Direct API calls also work:
 Load the `nvidia-forum-search` skill before searching. It defines hard
 limits (one attempt per term, no retries, no sleep) to avoid burning time
 on rate-limited responses.
+
+### Browser tool
+`browser_navigate` and related browser tools are **not available** in this
+environment. The `agent-browser` npm package and Chromium are not installed,
+and the network policy blocks the downloads needed to install them. Do not
+attempt to use browser tools or suggest the user install them mid-session.
+For web content, use `curl` to fetch pages or APIs directly.
 
 ### Weather
   curl http://wttr.in/YourCity?format=3

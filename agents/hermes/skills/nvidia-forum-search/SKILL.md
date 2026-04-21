@@ -31,7 +31,7 @@ Search the NVIDIA Developer Forums for recent posts and discussions.
 
 ```bash
 curl -s --max-time 10 \
-  "https://forums.developer.nvidia.com/search.json?term=SEARCH_TERM&order=latest" \
+  "https://forums.developer.nvidia.com/search.json?q=SEARCH_TERM&order=latest" \
   -o /tmp/forum_results.json
 ```
 
@@ -43,7 +43,9 @@ python3 -c "
 import json, sys
 try:
     d = json.load(open('/tmp/forum_results.json'))
-    topics = d.get('topics', {}).get('topics', [])
+    topics = d.get('topics', [])
+    if not topics:
+        print('no results')
     for t in topics[:5]:
         print(t.get('created_at','')[:10], t.get('title',''))
 except Exception as e:
@@ -67,6 +69,6 @@ tool goes through the same proxy and will receive the same throttle.
   wastes significant time when the timeout exceeds the 10-minute budget.
 - `browser_navigate` to `forums.developer.nvidia.com` consistently fails in
   this environment — skip it.
-- The HTML endpoint (`/search?q=…`) and the JSON endpoint (`/search.json?term=…`)
+- The HTML endpoint (`/search?q=…`) and the JSON endpoint (`/search.json?q=…`)
   share the same rate-limit quota. Trying both after a 429 doubles the penalty.
 - `/latest.json` is also rate-limited — do not use it as a fallback.

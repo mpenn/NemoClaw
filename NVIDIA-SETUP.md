@@ -126,8 +126,12 @@ NEMOCLAW_POLICY_PRESETS=npm,pypi,huggingface,brew,brave,slack,github,nvidia-foru
 > keep it to individuals who should have agent access.
 
 > **Note on `GITHUB_TOKEN`:** Optional. If set, the agent can use `gh` to query
-> GitHub issues and PRs. Use a fine-grained token scoped to the repositories you want
-> the agent to access.
+> GitHub issues and PRs. Create a classic PAT at [github.com/settings/tokens](https://github.com/settings/tokens)
+> with `repo` scope. **NVIDIA org requirement:** after creating the token you must
+> authorize it for SAML SSO — on the token list page click **Configure SSO** next to
+> the token and click **Authorize** next to the NVIDIA organization. Without this step
+> the agent will get a "Resource protected by organization SAML enforcement" error on
+> any NVIDIA org repository, even with a valid token.
 
 ---
 
