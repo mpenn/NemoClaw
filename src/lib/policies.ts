@@ -469,6 +469,87 @@ function applyPreset(sandboxName, presetName, _options = {}) {
   return true;
 }
 
+function applyPresets(sandboxName, presetNames) {
+  const isRfc1123Label = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(sandboxName);
+  if (!sandboxName || sandboxName.length > 63 || !isRfc1123Label) {
+    throw new Error(
+      `Invalid or truncated sandbox name: '${sandboxName}'. ` +
+        `Names must be 1-63 chars, lowercase alphanumeric, with optional internal hyphens.`,
+    );
+  }
+
+  if (!presetNames || presetNames.length === 0) return true;
+
+  // Load all presets up front — fail fast before touching the sandbox
+  const loaded = [];
+  for (const name of presetNames) {
+    const content = loadPreset(name);
+    if (!content) {
+      console.error(`  Cannot load preset: ${name}`);
+      return false;
+    }
+    const entries = extractPresetEntries(content);
+    if (!entries) {
+      console.error(`  Preset ${name} has no network_policies section.`);
+      return false;
+    }
+    loaded.push({ name, content, entries });
+  }
+
+  // Fetch current policy once
+  let rawPolicy = "";
+  try {
+    rawPolicy = runCapture(buildPolicyGetCommand(sandboxName), { ignoreError: true });
+  } catch {
+    /* ignored */
+  }
+
+  // Merge all presets in memory before submitting once
+  let merged = parseCurrentPolicy(rawPolicy);
+  const allEndpoints = [];
+  for (const { content, entries } of loaded) {
+    merged = mergePresetIntoPolicy(merged, entries);
+    allEndpoints.push(...getPresetEndpoints(content));
+  }
+
+  if (allEndpoints.length > 0) {
+    console.log(`  Widening sandbox egress — adding: ${allEndpoints.join(", ")}`);
+  }
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-policy-"));
+  const tmpFile = path.join(tmpDir, "policy.yaml");
+  fs.writeFileSync(tmpFile, merged, { encoding: "utf-8", mode: 0o600 });
+
+  try {
+    run(buildPolicySetCommand(tmpFile, sandboxName));
+    for (const { name } of loaded) {
+      console.log(`  Applied preset: ${name}`);
+    }
+  } finally {
+    try {
+      fs.unlinkSync(tmpFile);
+    } catch {
+      /* ignored */
+    }
+    try {
+      fs.rmdirSync(tmpDir);
+    } catch {
+      /* ignored */
+    }
+  }
+
+  const sandbox = registry.getSandbox(sandboxName);
+  if (sandbox) {
+    const pols = sandbox.policies || [];
+    for (const { name } of loaded) {
+      if (!pols.includes(name)) pols.push(name);
+    }
+    registry.updateSandbox(sandboxName, { policies: pols });
+  }
+
+  return true;
+}
+
 function getAppliedPresets(sandboxName) {
   const sandbox = registry.getSandbox(sandboxName);
   return sandbox ? sandbox.policies || [] : [];
@@ -583,6 +664,7 @@ export {
   mergePresetIntoPolicy,
   removePresetFromPolicy,
   applyPreset,
+  applyPresets,
   removePreset,
   applyPermissivePolicy,
   getAppliedPresets,

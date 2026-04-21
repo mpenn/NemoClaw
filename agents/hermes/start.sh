@@ -319,6 +319,11 @@ export NO_PROXY="$_NO_PROXY_VAL"
 export http_proxy="$_PROXY_URL"
 export https_proxy="$_PROXY_URL"
 export no_proxy="$_NO_PROXY_VAL"
+# Export Outlook channel placeholder so _has_outlook_channel detects it at
+# runtime even when NEMOCLAW_MESSAGING_CHANNELS_B64 was baked without Outlook
+# (e.g., rebuild without env sourced). The L7 proxy rewrites the placeholder at
+# egress; a non-empty value here means "provider is expected to be configured."
+export OUTLOOK_CLIENT_ID="openshell:resolve:env:OUTLOOK_CLIENT_ID"
 
 _PROXY_MARKER_BEGIN="# nemoclaw-proxy-config begin"
 _PROXY_MARKER_END="# nemoclaw-proxy-config end"
@@ -330,6 +335,8 @@ export http_proxy=\"$_PROXY_URL\"
 export https_proxy=\"$_PROXY_URL\"
 export no_proxy=\"$_NO_PROXY_VAL\"
 export HERMES_HOME=\"${HERMES_WRITABLE}\"
+export SLACK_BOT_TOKEN=\"openshell:resolve:env:SLACK_BOT_TOKEN\"
+export GITHUB_TOKEN=\"openshell:resolve:env:GITHUB_TOKEN\"
 ${_PROXY_MARKER_END}"
 
 if [ "$(id -u)" -eq 0 ]; then

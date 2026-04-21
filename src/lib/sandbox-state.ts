@@ -221,9 +221,11 @@ export function backupSandboxState(sandboxName: string): BackupResult {
   try {
     // Build tar command that only includes existing directories
     // First, check which state dirs actually exist in the sandbox
-    const existCheckCmd = stateDirs
-      .map((d) => `[ -d "${writableDir}/${d}" ] && echo "${d}"`)
-      .join("; ");
+    // Append `; true` so the SSH command always exits 0 when the connection
+    // succeeds — without it, exit status reflects the last `[ -d ]` test,
+    // which returns 1 for any dir that doesn't exist.
+    const existCheckCmd =
+      stateDirs.map((d) => `[ -d "${writableDir}/${d}" ] && echo "${d}"`).join("; ") + "; true";
     _log(`Checking existing dirs via SSH: ${existCheckCmd.substring(0, 100)}...`);
     const existResult = spawnSync(
       "ssh",

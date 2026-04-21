@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+preset:
+  name: wttr
+  description: "wttr.in weather lookups (plain HTTP via curl)"
+
+network_policies:
+  wttr:
+    name: wttr
+    endpoints:
+      # wttr.in only works via plain HTTP through the OpenShell proxy.
+      # HTTPS returns 403 from the L7 proxy for this host.
+      - host: wttr.in
+        port: 80
+        protocol: rest
+        enforcement: enforce
+        rules:
+          - allow: { method: GET, path: "/**" }
+    binaries:
+      - { path: /usr/bin/curl }
+      - { path: /usr/bin/python3.11 }
+      - { path: /usr/local/bin/hermes }
