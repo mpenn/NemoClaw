@@ -4430,6 +4430,8 @@ const MESSAGING_CHANNELS = [
     appTokenEnvKey: "SLACK_APP_TOKEN",
     appTokenHelp: "Slack API → Your Apps → Basic Information → App-Level Tokens (xapp-...).",
     appTokenLabel: "Slack App Token (Socket Mode)",
+    userIdEnvKey: "SLACK_ALLOWED_IDS",
+    allowIdsMode: "dm",
   },
   {
     name: "outlook",

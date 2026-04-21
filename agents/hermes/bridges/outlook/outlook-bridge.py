@@ -189,7 +189,7 @@ async def ask_hermes(prompt: str) -> str | None:
         resp = await _client.post(
             HERMES_URL,
             json={"model": "hermes-agent", "messages": [{"role": "user", "content": prompt}]},
-            timeout=300,
+            timeout=1200,
         )
         resp.raise_for_status()
         return resp.json()["choices"][0]["message"]["content"]

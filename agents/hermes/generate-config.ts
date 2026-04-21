@@ -23,6 +23,13 @@ const TOKEN_ENV: Record<string, string> = {
   slack: "SLACK_BOT_TOKEN",
 };
 
+// Gateway reads these env vars in _is_user_authorized — NOT config.yaml allowed_users.
+const ALLOWED_USERS_ENV: Record<string, string> = {
+  telegram: "TELEGRAM_ALLOWED_USERS",
+  discord: "DISCORD_ALLOWED_USERS",
+  slack: "SLACK_ALLOWED_USERS",
+};
+
 function main(): void {
   const model = process.env.NEMOCLAW_MODEL!;
   const baseUrl = process.env.NEMOCLAW_INFERENCE_BASE_URL!;
@@ -73,9 +80,7 @@ function main(): void {
         enabled: true,
         token: `openshell:resolve:env:${TOKEN_ENV[ch]}`,
       };
-      if (ch in allowedIds && allowedIds[ch]?.length) {
-        pCfg.allowed_users = allowedIds[ch].map(String).join(",");
-      }
+      // allowed_users in config.yaml is not read by the gateway — see ALLOWED_USERS_ENV below
       platformsConfig[ch] = pCfg;
     }
   }
@@ -110,6 +115,12 @@ function main(): void {
   for (const ch of msgChannels) {
     if (ch in TOKEN_ENV) {
       envLines.push(`${TOKEN_ENV[ch]}=openshell:resolve:env:${TOKEN_ENV[ch]}`);
+    }
+  }
+  // Write allowed-user IDs so gateway _is_user_authorized reads them from env.
+  for (const [ch, ids] of Object.entries(allowedIds)) {
+    if (ch in ALLOWED_USERS_ENV && ids.length > 0) {
+      envLines.push(`${ALLOWED_USERS_ENV[ch]}=${ids.map(String).join(",")}`);
     }
   }
 
