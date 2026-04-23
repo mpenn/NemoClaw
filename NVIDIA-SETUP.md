@@ -6,6 +6,14 @@ It also notes the current Outlook bridge path, which is still a WIP and should b
 treated as optional. It covers building from source, creating the Slack app,
 configuring credentials, and running the first onboard.
 
+> **Important**
+>
+> Run `git submodule update --init --recursive` immediately after cloning and before
+> any build or onboard step. The NeMo-Flow Hermes telemetry path is gated on the
+> `third_party/nemo-flow` submodule contents, not just on the parent repo commit.
+> If the submodule is not initialized, onboard falls back to the standard Hermes
+> base image and skips the patched NeMo-Flow image path.
+
 ---
 
 ## Prerequisites
@@ -17,27 +25,46 @@ configuring credentials, and running the first onboard.
 - Python 3.11+ and `uv`
 - `git`
 
+Verify the host actually meets those tool prerequisites before starting:
+
+```bash
+node --version
+command -v uv
+```
+
+If your host `node` is older than 22.x, or `uv` is missing from `PATH`, fix that
+first. The source build and onboard flow assume both are available.
+
 ---
 
 ## 1. Clone and Build from Source
 
 ```bash
-git clone https://github.com/NVIDIA/NemoClaw.git
+git clone https://github.com/mpenn/NemoClaw.git
 cd NemoClaw
-
-# Install all dependencies and build the plugin
-npm install
-cd nemoclaw && npm install && npm run build && cd ..
-cd nemoclaw-blueprint && uv sync && cd ..
+git checkout community-sentiment-issue-tracker-demo
+git submodule update --init --recursive
 ```
 
+If `third_party/nemo-flow/patches/hermes-agent/0001-add-nemo-flow-integration.patch`
+is missing after clone, the submodule is not initialized correctly and the telemetry
+build path will be skipped.
+
 Verify you are actually running Node 22 for the CLI. If your host `node` is older,
-use the `npx`-resolved binary for all NemoClaw commands:
+use the `npx`-resolved binary for all npm-backed repo steps and NemoClaw commands:
 
 ```bash
 node --version
 NODE22=$(npx -y node@22 -p 'process.execPath')
 "$NODE22" ./bin/nemoclaw.js --version
+```
+
+Install all dependencies and build from source:
+
+```bash
+"$NODE22" "$(command -v npm)" install
+cd nemoclaw && "$NODE22" "$(command -v npm)" install && "$NODE22" "$(command -v npm)" run build && cd ..
+cd nemoclaw-blueprint && uv sync && cd ..
 ```
 
 ---
@@ -55,12 +82,12 @@ and event subscriptions.
 
    | Field | Placeholder | Example replacement |
    |-------|-------------|---------------------|
-   | `display_information.name` | `MyUser NemoClaw Staging` | `Alice NemoClaw` |
-   | `features.bot_user.display_name` | `MyUser NemoClaw Staging` | `Alice NemoClaw` |
+   | `display_information.name` | `MyUser NemoClaw` | `Alice NemoClaw` |
+   | `features.bot_user.display_name` | `MyUser NemoClaw` | `Alice NemoClaw` |
    | `features.slash_commands[].command` | `/myuser-nemoclaw` | `/alice-nemoclaw` |
 
-   The slash command must be lowercase and hyphen-separated. Note it down — you'll
-   see this name appear in Slack when users type `/`.
+   The slash command must be lowercase and hyphen-separated. Note it down because
+   you will see this name appear in Slack when users type `/`.
 
 3. Go to [api.slack.com/apps](https://api.slack.com/apps) and click **Create New App**.
 4. Choose **From an app manifest**, select your workspace, then click **Next**.
@@ -72,30 +99,30 @@ The manifest configures:
 - Bot events: `message.im`, `message.channels`, `message.mpim`, `app_mention`
 - OAuth scopes: `im:history`, `im:read`, `channels:history`, `chat:write`,
   `reactions:write`, `users:read`, and related DM/channel permissions
-- Your custom slash command (e.g. `/alice-nemoclaw`)
+- Your custom slash command (for example `/alice-nemoclaw`)
 
 ### 2b. Enable Socket Mode
 
 1. In your new app's settings, go to **Socket Mode** in the left sidebar.
 2. Toggle **Enable Socket Mode** on.
-3. When prompted, name the app-level token (e.g. `nemoclaw-socket`) and click
-   **Generate**. Copy the token — it starts with `xapp-`.
+3. When prompted, name the app-level token (for example `nemoclaw-socket`) and click
+   **Generate**. Copy the token. It starts with `xapp-`.
 
-   Note - you may need to toggle socket mode off, then back on.
+   Note: if Slack behaves oddly here, toggle Socket Mode off and back on once.
 
 ### 2c. Install the app to your workspace
 
 1. Go to **OAuth & Permissions** in the left sidebar.
 2. Click **Install to Workspace** and authorize it.
-3. Copy the **Bot User OAuth Token** — it starts with `xoxb-`.
+3. Copy the **Bot User OAuth Token**. It starts with `xoxb-`.
 
 ### 2d. Find your Slack user ID
 
-The sandbox will only respond to messages from users on the allowlist.
+The sandbox only responds to users on the allowlist.
 
-1. Open Slack, click your name/avatar.
-2. Click **Profile**, then the **⋮** (more) menu, then **Copy member ID**.
-3. Save this — it looks like `U0887Q5UVV4`.
+1. Open Slack and click your name or avatar.
+2. Click **Profile**, then the **⋮** menu, then **Copy member ID**.
+3. Save this. It looks like `U0887Q5UVV4`.
 
 ---
 
@@ -106,8 +133,8 @@ template is wired to the NVIDIA integrate endpoint.
 
 1. Go to [build.nvidia.com](https://build.nvidia.com) and sign in with your NVIDIA
    account.
-2. Navigate to any model page (e.g. Nemotron Super) and click **Get API Key**.
-3. Copy the key — it starts with `nvapi-`.
+2. Navigate to any model page and click **Get API Key**.
+3. Copy the key. It starts with `nvapi-`.
 
 ---
 
@@ -128,6 +155,7 @@ NEMOCLAW_PROVIDER=compatible-endpoint
 NEMOCLAW_ENDPOINT_URL=https://integrate.api.nvidia.com/v1
 COMPATIBLE_API_KEY=nvapi-<your key from build.nvidia.com>
 NEMOCLAW_PROVIDER_KEY=nvapi-<same key as above>
+# NVIDIA_API_KEY=nvapi-<optional legacy variable; not used by this guide's compatible-endpoint flow>
 NEMOCLAW_MODEL=qwen/qwen3-next-80b-a3b-instruct
 NEMOCLAW_POLICY_MODE=custom
 
@@ -145,30 +173,34 @@ OUTLOOK_USER_MAILBOX=<optional: your mailbox used for scheduled-job replies>
 
 NEMOCLAW_SANDBOX_NAME=nemoclaw-hermes
 NEMOCLAW_POLICY_PRESETS=slack,github,outlook,nvidia-forum
+
+# Optional Phoenix telemetry endpoint. Leave unset unless you are enabling Phoenix.
+# PHOENIX_COLLECTOR_ENDPOINT=http://172.17.0.1:6006/v1/traces
 ```
 
 > **Note on `SLACK_ALLOWED_IDS`:** Only the user IDs listed here can message the bot.
-> Add multiple IDs as a comma-separated list. This is the primary access control —
-> keep it to individuals who should have agent access.
+> Add multiple IDs as a comma-separated list. This is the primary access control.
 >
 > **Note on `GITHUB_TOKEN`:** Optional. If set, the agent can use `gh` to query
 > GitHub issues and PRs. Create a classic PAT at [github.com/settings/tokens](https://github.com/settings/tokens)
-> with `repo` scope. **NVIDIA org requirement:** after creating the token you must
-> authorize it for SAML SSO — on the token list page click **Configure SSO** next to
-> the token and click **Authorize** next to the NVIDIA organization. Without this step
-> the agent will get a "Resource protected by organization SAML enforcement" error on
-> any NVIDIA org repository, even with a valid token.
+> with `repo` scope. After creating the token, authorize it for NVIDIA SAML SSO by
+> clicking **Configure SSO** next to the token and then **Authorize** next to the
+> NVIDIA organization.
+>
+> **Note on `NVIDIA_API_KEY`:** Some local `.env` files still carry `NVIDIA_API_KEY`
+> from older or different inference flows. For this Hermes guide, the active path is
+> `compatible-endpoint`, so `COMPATIBLE_API_KEY` and `NEMOCLAW_PROVIDER_KEY` are the
+> variables that matter.
 
 ---
 
 ## 5. Deploy Observability System (Optional)
 
 NemoClaw integrates with [Arize Phoenix](https://arize.com/docs/phoenix) for agent
-telemetry. When enabled, every conversation produces an OpenTelemetry trace with spans
-for the LLM call, each tool invocation, and the overall session — visible in the
-Phoenix UI in real time.
+telemetry. When enabled, each conversation produces an OpenTelemetry trace with spans
+for the LLM call, each tool invocation, and the overall session.
 
-This step is optional. Skip it if you don't need trace-level observability.
+This step is optional. Skip it if you do not need trace-level observability.
 
 ### 5a. Start Phoenix
 
@@ -181,51 +213,61 @@ docker run --rm -p 6006:6006 -p 4317:4317 arizephoenix/phoenix:latest
 
 Phoenix exposes two ports:
 
-- **6006** — web UI and OTLP/HTTP trace ingestion (`/v1/traces`)
-- **4317** — OTLP/gRPC trace ingestion (not used by NemoClaw)
+- `6006` for the web UI and OTLP/HTTP trace ingestion at `/v1/traces`
+- `4317` for OTLP/gRPC trace ingestion
 
-Once started, the UI is available at [http://localhost:6006](http://localhost:6006).
+### 5b. Configure NemoClaw to Send Traces
 
-### 5b. Configure NemoClaw to send traces
-
-Add the following to your `.env`:
+Add the following to `.env`:
 
 ```ini
 PHOENIX_COLLECTOR_ENDPOINT=http://172.17.0.1:6006/v1/traces
 ```
 
-`172.17.0.1` is the Docker bridge IP — the address the sandbox container uses to
-reach services on the host. If your Docker bridge is on a different subnet, replace
-it with the correct IP (`ip addr show docker0` to check).
+`172.17.0.1` is the Docker bridge IP that the sandbox uses to reach services on the
+host. If your Docker bridge uses a different subnet, replace it with the correct IP.
 
 > **Note:** Phoenix telemetry requires the NeMo-Flow patched Hermes base image, which
-> is built automatically when the `third_party/nemo-flow` submodule is present. If
-> the submodule is not initialized, this variable is ignored.
+> is only built when the `third_party/nemo-flow` submodule is initialized. If the
+> submodule is not initialized, this variable is ignored.
+>
+> If you already onboarded before initializing the submodule, rerun a forced rebuild
+> after the submodule update so NemoClaw actually builds and deploys the patched image.
 
-### 5c. Rebuild and verify
+### 5c. Rebuild and Verify
 
 Rebuild the sandbox to pick up the new endpoint:
 
 ```bash
-set -a && source .env && set +a && node bin/nemoclaw.js <sandbox-name> rebuild --yes
+set -a && source .env && set +a
+export NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE=1
+NODE22=$(npx -y node@22 -p 'process.execPath')
+"$NODE22" ./bin/nemoclaw.js <sandbox-name> rebuild --yes
+```
+
+If you are iterating on the NeMo-Flow submodule or `Dockerfile.base.nemo-flow`, drop
+the cached patched base image before rebuilding so Docker does not reuse an old local
+base:
+
+```bash
+docker image rm ghcr.io/nvidia/nemoclaw/hermes-sandbox-base-nemo-flow:latest || true
 ```
 
 Send a message to your bot in Slack, then open [http://localhost:6006](http://localhost:6006).
-Under **Projects → default**, you should see a new trace for each conversation turn
-with child spans for the LLM call and any tools the agent used.
+Under **Projects -> default**, you should see a new trace for each conversation turn.
 
 ---
 
 ## 6. Run Onboard
 
-Source `.env` before running — the NemoClaw CLI reads all configuration from
-`process.env` and does not load `.env` automatically. The `set -a` flag is
-required so variables are exported to child processes (plain `source .env`
-sets shell variables but does not export them to `node`). Use the explicit
-Node 22 binary if your host default `node` is older.
+Source `.env` before running. The NemoClaw CLI reads all configuration from
+`process.env` and does not load `.env` automatically. The `set -a` flag is required
+so variables are exported to child processes. Use the explicit Node 22 binary if
+your host default `node` is older.
 
 ```bash
 set -a && source .env && set +a
+export NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE=1
 NODE22=$(npx -y node@22 -p 'process.execPath')
 "$NODE22" ./bin/nemoclaw.js onboard --non-interactive
 ```
@@ -238,13 +280,35 @@ This will:
 4. Apply the network policy presets
 5. Start the sandbox and attach the configured channel providers
 
-The first run takes 3–5 minutes. Subsequent rebuilds are faster because the base
+The first run takes 3-5 minutes. Subsequent rebuilds are faster because the base
 image is cached.
+
+If the sandbox already exists, `onboard --non-interactive` may reuse it instead of
+building a fresh image. For merged-branch validation, NeMo-Flow verification, or any
+change that must be present in the built image, follow onboard with an explicit
+rebuild:
+
+```bash
+set -a && source .env && set +a
+export NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE=1
+NODE22=$(npx -y node@22 -p 'process.execPath')
+"$NODE22" ./bin/nemoclaw.js nemoclaw-hermes rebuild --yes
+```
+
+During onboarding you may still see:
+
+- `Configuring inference (NIM)` even when using the compatible-endpoint flow
+- an initial Hermes or dashboard probe timeout before the sandbox becomes healthy
+- the sandbox starting up before all preset policies are attached
+
+Those messages are expected with the current onboard flow and do not necessarily
+mean the install failed.
 
 To rebuild after changing `.env` or any agent file:
 
 ```bash
 set -a && source .env && set +a
+export NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE=1
 NODE22=$(npx -y node@22 -p 'process.execPath')
 "$NODE22" ./bin/nemoclaw.js nemoclaw-hermes rebuild --yes
 ```
@@ -284,33 +348,25 @@ sandbox agent is allowed to reach. Each preset is a named YAML file in
 | `outlook` | `graph.microsoft.com`, `login.microsoftonline.com` | Optional WIP Outlook bridge path; not required for the main Slack/GitHub/forum workflow |
 | `nvidia-forum` | `forums.developer.nvidia.com`, `docs.nvidia.com` | NVIDIA Developer Forums and docs |
 
-To remove a preset, delete it from the `NEMOCLAW_POLICY_PRESETS` list and rebuild.
-The sandbox cannot reach any host not covered by an active preset.
+To remove a preset, delete it from `NEMOCLAW_POLICY_PRESETS` and rebuild. The sandbox
+cannot reach any host not covered by an active preset.
 
 ### Agent Soul
 
 The agent's system prompt (`agents/hermes/SOUL.md`) sets the sandbox context:
 
 - The agent knows it runs inside an OpenShell sandbox with a strict egress policy
-- When a network request is blocked (HTTP 403 from the proxy), the agent reports
-  this to the user rather than retrying with different tools
-- Tool guidance is included for GitHub (`gh` CLI), Slack channel reading, NVIDIA
-  forums, and Outlook bridge constraints
+- When a network request is blocked, the agent reports that to the user rather than
+  retrying with different tools
+- It keeps response behavior and skill-routing high level rather than embedding
+  detailed source-specific procedures in the main prompt
 
 ### Agent Skills
 
 Skills are loaded on demand by the agent when relevant to a task. They live in
 `agents/hermes/skills/`.
 
-**`github-interactions`** — Teaches the agent why `curl` is blocked for GitHub API
-calls and how to use the `gh` CLI instead. Includes examples for listing issues, PRs,
-and fetching API data. Load this skill when doing any GitHub work.
-
-**`slack-channel-summarizer`** — Step-by-step procedure for reading and summarizing
-Slack channel history using the Slack Web API via the authenticated bot token. Handles
-pagination, user ID resolution, and time-range filtering.
-
-**`nvidia-forum-search`** — Searches the NVIDIA Developer Forums JSON endpoint with
-strict rate-limit guardrails: one attempt per search term, two searches maximum per
-task, immediate stop on any 429 response. Prevents the agent from spiraling on
-throttled requests.
+- `github-interactions` for GitHub reads and repo operations
+- `slack-channel-summarizer` for Slack channel resolution and message history
+- `nvidia-forum-search` for NVIDIA Developer Forum access
+- `cross-source-gap-analysis` for comparing Slack, GitHub, and forum findings

@@ -27,6 +27,12 @@ It installs the [NVIDIA OpenShell](https://github.com/NVIDIA/OpenShell) runtime,
 
 NemoClaw adds guided onboarding, a hardened blueprint, state management, OpenShell-managed channel messaging, routed inference, and layered protection on top of the [NVIDIA OpenShell](https://github.com/NVIDIA/OpenShell) runtime. For the full feature list, refer to [Overview](https://docs.nvidia.com/nemoclaw/latest/about/overview.html). For the system diagram, component model, and blueprint lifecycle, refer to [How It Works](https://docs.nvidia.com/nemoclaw/latest/about/how-it-works.html) and [Architecture](https://docs.nvidia.com/nemoclaw/latest/reference/architecture.html).
 
+> **WARNING FOR THIS FORK**
+>
+> This repository is a fork of `NVIDIA/NemoClaw` that was created on April 16, 2026.
+> It is not guaranteed to stay in lockstep with upstream behavior, images, or setup docs.
+> If you are working on the NVIDIA internal Hermes path in this fork, start with [NVIDIA-SETUP.md](NVIDIA-SETUP.md) instead of the generic quickstart below.
+
 ## Getting Started
 
 Follow these steps to install NemoClaw and run your first sandboxed OpenClaw agent.
