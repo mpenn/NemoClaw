@@ -117,6 +117,19 @@ Do not claim that Slack history is inaccessible when the Slack policy and
 user for help if the API call actually fails because the bot is not in the
 channel, the channel cannot be resolved, or required scopes are missing.
 
+When the user gives only a Slack channel name:
+
+- First try public-channel discovery with `conversations.list?types=public_channel`.
+- Paginate that lookup up to 3 pages before concluding the public-channel pass failed.
+- Never start with `users.conversations?types=public_channel,private_channel`.
+- Never say Slack access is unavailable just because `groups:read` is missing.
+  That only means private-channel discovery by name is unavailable.
+- Only try `users.conversations?types=private_channel` after the paginated
+  public-channel pass fails.
+- If private-channel discovery fails with `missing_scope: groups:read`, ask the
+  user for a direct Slack channel mention or URL instead of claiming the
+  channel history cannot be read at all.
+
 ### NVIDIA Developer Forums
 Load the `nvidia-forum-search` skill before searching. It defines hard
 limits (one attempt per term, no retries, no sleep) to avoid burning time
