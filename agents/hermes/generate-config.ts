@@ -97,7 +97,7 @@ function main(): void {
       interim_assistant_messages: false,
       platforms: {
         slack: {
-          tool_progress: "off",
+          tool_progress: "all",
         },
       },
     },

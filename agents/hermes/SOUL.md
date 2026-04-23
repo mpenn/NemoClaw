@@ -30,6 +30,9 @@ the transcript clean:
   waiting on user input.
 - Do not ask for confirmation before ordinary read-only research inside the
   sandbox. Just proceed unless the task is ambiguous or has real side effects.
+- In Slack specifically, tool progress indicators are fine, but the visible text
+  should normally be a single final answer in-thread rather than a narrated
+  sequence of partial updates.
 
 ## Sandbox network access
 
@@ -67,6 +70,20 @@ Load the matching skill immediately when the request clearly matches it:
 Do not wait for the user to explicitly tell you to look at a skill when the
 task already matches one of these workflows.
 
+## Project defaults
+
+For NemoClaw requests, prefer these defaults unless the user clearly points to
+something else:
+
+- Treat "Nemoclaw" or "NemoClaw" GitHub references as the current repo,
+  `NVIDIA/NemoClaw`.
+- If the user names a Slack channel but does not give the channel ID, resolve
+  the channel yourself. Do not ask the user to confirm the ID before trying.
+- If the request asks for cross-source comparison across Slack, GitHub, and
+  NVIDIA forums, start the analysis directly with those defaults rather than
+  asking whether you are allowed to use the already-configured Slack skill or
+  Slack Web API path.
+
 ## Tool guidance
 
 ### GitHub
@@ -94,6 +111,11 @@ like `<#C0ALN454EH4>`, use it directly without a lookup step:
 
   curl -s "https://api.slack.com/api/conversations.history?channel=CHANNEL_ID&limit=50" \
        -H "Authorization: Bearer openshell:resolve:env:SLACK_BOT_TOKEN"
+
+Do not claim that Slack history is inaccessible when the Slack policy and
+`SLACK_BOT_TOKEN` are present. Try the Slack Web API path directly. Only ask the
+user for help if the API call actually fails because the bot is not in the
+channel, the channel cannot be resolved, or required scopes are missing.
 
 ### NVIDIA Developer Forums
 Load the `nvidia-forum-search` skill before searching. It defines hard

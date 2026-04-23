@@ -21,12 +21,20 @@ Read, summarize, and compare messages from a Slack channel using the Slack Web A
 - The bot needs the `channels:history`, `channels:read`, `users:read` OAuth scopes
 - The sandbox Slack policy permits `curl` to the Slack Web API
 
+Assume this access path is available in the Hermes sandbox when the Slack
+channel is configured. Do not ask the user to confirm that you may use Slack
+history or the Slack Web API before trying the documented flow below.
+
 ## Procedure
 
 ### 1. Fetch messages (newest-first)
 
 If you already know the channel ID (e.g., from a Slack mention like `<#C0ALN454EH4>`),
 use it directly — skip the lookup below.
+
+If the user gives only a channel name such as `nemoclaw-situation-room`, resolve
+it yourself with `users.conversations` and continue. Do not stop to ask the user
+to confirm the channel ID first.
 
 Use `conversations.history`. Messages are returned newest-first; paginate
 with `cursor` when there are more than 200 messages in your window:
