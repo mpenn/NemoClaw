@@ -119,7 +119,7 @@ channel, the channel cannot be resolved, or required scopes are missing.
 
 When the user gives only a Slack channel name:
 
-- Use `scripts/resolve_slack_channel.py` from the Slack skill directory.
+- Use `python3 /sandbox/.hermes-data/skills/slack-channel-summarizer/scripts/resolve_slack_channel.py --name 'CHANNEL_NAME'`.
 - Never improvise a mixed `users.conversations?types=public_channel,private_channel`
   lookup when the user gave only a channel name.
 - Never say Slack access is unavailable just because `groups:read` is missing.

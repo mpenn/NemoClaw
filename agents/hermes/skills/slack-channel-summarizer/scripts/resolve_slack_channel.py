@@ -141,13 +141,13 @@ def main() -> int:
     parser.add_argument("--name", help="Slack channel name like nemoclaw-situation-room")
     parser.add_argument("--id", dest="channel_id", help="Known Slack channel ID like C0123456789")
     parser.add_argument("--input", help="Raw user-provided channel value; can be name, mention, URL, or ID")
-    parser.add_argument("--page-cap", type=int, default=3)
+    parser.add_argument("--page-cap", type=int, default=25)
     args = parser.parse_args()
 
     token = os.environ.get("SLACK_BOT_TOKEN", "").strip()
     if not token:
-      print(json.dumps({"ok": False, "error": "missing_token"}))
-      return 1
+        print(json.dumps({"ok": False, "error": "missing_token"}))
+        return 1
 
     raw_value = args.input or args.channel_id or args.name or ""
     extracted_id = extract_channel_id(raw_value)
@@ -189,6 +189,7 @@ def main() -> int:
                 "stage": "private_lookup",
                 "error": "missing_private_discovery_scope",
                 "needed": "groups:read",
+                "searched_public_pages": args.page_cap,
                 "public_lookup": public_result,
             }))
             return 2
@@ -196,6 +197,7 @@ def main() -> int:
         print(json.dumps({
             "ok": False,
             "error": "channel_not_found",
+            "searched_public_pages": args.page_cap,
             "public_lookup": public_result,
             "private_lookup": private_result,
         }))

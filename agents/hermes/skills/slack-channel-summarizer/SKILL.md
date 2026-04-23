@@ -46,19 +46,21 @@ direct Slack mention/link from the user.
 - Do not use `session_search` as a substitute for Slack API discovery.
 - Use the resolver script below for channel-name lookup. Do not reimplement the
   lookup logic ad hoc with raw Slack API calls unless you are debugging the script itself.
+- If the user gives only a channel name, your first command should be this exact pattern:
+  `python3 /sandbox/.hermes-data/skills/slack-channel-summarizer/scripts/resolve_slack_channel.py --name 'CHANNEL_NAME'`
 
 ## Resolver script
 
 Use this helper script for Slack channel resolution:
 
-`scripts/resolve_slack_channel.py`
+`/sandbox/.hermes-data/skills/slack-channel-summarizer/scripts/resolve_slack_channel.py`
 
 Examples:
 
 ```bash
-python3 scripts/resolve_slack_channel.py --input '#nemoclaw-situation-room'
-python3 scripts/resolve_slack_channel.py --input '<#C0ALN454EH4>'
-python3 scripts/resolve_slack_channel.py --name 'nemoclaw-situation-room'
+python3 /sandbox/.hermes-data/skills/slack-channel-summarizer/scripts/resolve_slack_channel.py --input '#nemoclaw-situation-room'
+python3 /sandbox/.hermes-data/skills/slack-channel-summarizer/scripts/resolve_slack_channel.py --input '<#C0ALN454EH4>'
+python3 /sandbox/.hermes-data/skills/slack-channel-summarizer/scripts/resolve_slack_channel.py --name 'nemoclaw-situation-room'
 ```
 
 The script prints JSON. Important outcomes:
@@ -92,18 +94,18 @@ If you already know the channel ID (e.g., from a Slack mention like `<#C0ALN454E
 use it directly — skip the lookup below.
 
 If the user gives only a channel name such as `nemoclaw-situation-room`, resolve
-it with the resolver script. Do not stop to ask the user to confirm the channel
-ID first.
+it with the resolver script first. Do not stop to ask the user to confirm the channel
+ID first, and do not replace this step with ad hoc Slack API discovery commands.
 
 ```bash
-python3 scripts/resolve_slack_channel.py --name 'nemoclaw-situation-room'
+python3 /sandbox/.hermes-data/skills/slack-channel-summarizer/scripts/resolve_slack_channel.py --name 'nemoclaw-situation-room'
 ```
 
 Decision rule:
 
 - If the script returns `ok: true`, use the returned `channel_id`.
 - If the script returns `missing_private_discovery_scope`, ask for a direct
-  Slack mention or channel URL.
+  Slack mention or channel URL and say that public-channel lookup was already attempted.
 - If the script returns `channel_not_found`, say the channel could not be found
   through the allowed lookup paths.
 
@@ -165,6 +167,9 @@ If the user asked for comparison or gap analysis, extend the output with:
 
 - Do not bypass the resolver script for channel-name lookup unless you are
   explicitly debugging the script itself.
+- The resolver already searches public channels deeply by default. Do not fall back
+  to a mixed `users.conversations?types=public_channel,private_channel` lookup just
+  because the name was not found immediately.
 - The exact failure to avoid is:
   calling `users.conversations?types=public_channel,private_channel`,
   receiving `missing_scope: groups:read`,
