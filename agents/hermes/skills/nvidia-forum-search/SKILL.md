@@ -1,6 +1,6 @@
 ---
 name: nvidia-forum-search
-description: Search the NVIDIA Developer Forums for recent posts and discussions.
+description: Search the NVIDIA Developer Forums for recent posts, discussions, and comparison inputs for gap analysis.
 ---
 
 # nvidia-forum-search

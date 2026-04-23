@@ -1,17 +1,19 @@
 # NemoClaw Hermes Setup Guide (NVIDIA Internal)
 
-This guide walks through standing up a NemoClaw Hermes sandbox with Slack integration
-from scratch. It covers building from source, creating the Slack app, configuring
-credentials, and running the first onboard.
+This guide walks through standing up a NemoClaw Hermes sandbox from source with the
+policy set and credentials needed for Slack, GitHub, and NVIDIA forum research.
+It also notes the current Outlook bridge path, which is still a WIP and should be
+treated as optional. It covers building from source, creating the Slack app,
+configuring credentials, and running the first onboard.
 
 ---
 
 ## Prerequisites
 
 - Linux host (Ubuntu 22.04+ recommended) with Docker installed and running
-- Access to [NVIDIA API Catalog](https://build.nvidia.com) for an inference API key
+- Access to [NVIDIA API Catalog](https://build.nvidia.com) for a compatible-endpoint inference API key
 - A Slack workspace where you have permission to create apps
-- Node.js 22+ and npm
+- Node.js 22.16+ and npm
 - Python 3.11+ and `uv`
 - `git`
 
@@ -29,10 +31,13 @@ cd nemoclaw && npm install && npm run build && cd ..
 cd nemoclaw-blueprint && uv sync && cd ..
 ```
 
-Verify the CLI works:
+Verify you are actually running Node 22 for the CLI. If your host `node` is older,
+use the `npx`-resolved binary for all NemoClaw commands:
 
 ```bash
-node bin/nemoclaw.js --version
+node --version
+NODE22=$(npx -y node@22 -p 'process.execPath')
+"$NODE22" ./bin/nemoclaw.js --version
 ```
 
 ---
@@ -96,7 +101,8 @@ The sandbox will only respond to messages from users on the allowlist.
 
 ## 3. Get Your NVIDIA API Key
 
-NemoClaw uses NVIDIA's inference endpoint for the agent's LLM.
+NemoClaw uses a compatible OpenAI-style endpoint for the agent's LLM. The default
+template is wired to the NVIDIA integrate endpoint.
 
 1. Go to [build.nvidia.com](https://build.nvidia.com) and sign in with your NVIDIA
    account.
@@ -113,15 +119,16 @@ Copy the template and fill in your values:
 cp env.template .env
 ```
 
-Open `.env` and fill in the following. Leave Outlook fields blank — they are not
-required for this setup.
+Open `.env` and fill in the following. Leave the Outlook fields blank unless you are
+explicitly testing the Outlook bridge WIP path.
 
 ```ini
 NEMOCLAW_AGENT=hermes
 NEMOCLAW_PROVIDER=compatible-endpoint
 NEMOCLAW_ENDPOINT_URL=https://integrate.api.nvidia.com/v1
 COMPATIBLE_API_KEY=nvapi-<your key from build.nvidia.com>
-NEMOCLAW_MODEL=nvidia/nemotron-3-super-120b-a12b
+NEMOCLAW_PROVIDER_KEY=nvapi-<same key as above>
+NEMOCLAW_MODEL=qwen/qwen3-next-80b-a3b-instruct
 NEMOCLAW_POLICY_MODE=custom
 
 SLACK_BOT_TOKEN=xoxb-<your bot token from OAuth & Permissions>
@@ -130,8 +137,14 @@ SLACK_ALLOWED_IDS=<your Slack user ID, e.g. U0887Q5UVV4>
 
 GITHUB_TOKEN=ghp_<optional: a GitHub personal access token>
 
+OUTLOOK_TENANT_ID=<optional: Microsoft tenant id>
+OUTLOOK_CLIENT_ID=<optional: Microsoft app client id>
+OUTLOOK_CLIENT_SECRET=<optional: Microsoft app client secret>
+OUTLOOK_BOT_MAILBOX=<optional: shared mailbox the bridge monitors>
+OUTLOOK_USER_MAILBOX=<optional: your mailbox used for scheduled-job replies>
+
 NEMOCLAW_SANDBOX_NAME=nemoclaw-hermes
-NEMOCLAW_POLICY_PRESETS=npm,pypi,huggingface,brew,brave,slack,github,nvidia-forum,wttr
+NEMOCLAW_POLICY_PRESETS=slack,github,outlook,nvidia-forum
 ```
 
 > **Note on `SLACK_ALLOWED_IDS`:** Only the user IDs listed here can message the bot.
@@ -208,10 +221,13 @@ with child spans for the LLM call and any tools the agent used.
 Source `.env` before running — the NemoClaw CLI reads all configuration from
 `process.env` and does not load `.env` automatically. The `set -a` flag is
 required so variables are exported to child processes (plain `source .env`
-sets shell variables but does not export them to `node`).
+sets shell variables but does not export them to `node`). Use the explicit
+Node 22 binary if your host default `node` is older.
 
 ```bash
-set -a && source .env && set +a && node bin/nemoclaw.js onboard --non-interactive
+set -a && source .env && set +a
+NODE22=$(npx -y node@22 -p 'process.execPath')
+"$NODE22" ./bin/nemoclaw.js onboard --non-interactive
 ```
 
 This will:
@@ -220,7 +236,7 @@ This will:
 2. Build a sandbox container image with your configuration baked in
 3. Push it to the local OpenShell gateway
 4. Apply the network policy presets
-5. Start the sandbox and connect to Slack
+5. Start the sandbox and attach the configured channel providers
 
 The first run takes 3–5 minutes. Subsequent rebuilds are faster because the base
 image is cached.
@@ -228,7 +244,9 @@ image is cached.
 To rebuild after changing `.env` or any agent file:
 
 ```bash
-set -a && source .env && set +a && node bin/nemoclaw.js nemoclaw-hermes rebuild --yes
+set -a && source .env && set +a
+NODE22=$(npx -y node@22 -p 'process.execPath')
+"$NODE22" ./bin/nemoclaw.js nemoclaw-hermes rebuild --yes
 ```
 
 ---
@@ -239,12 +257,15 @@ Once onboard completes, open Slack and send a direct message to your bot. It sho
 respond within a few seconds. If there is no response after 30 seconds, check logs:
 
 ```bash
-node bin/nemoclaw.js nemoclaw-hermes logs --follow
+NODE22=$(npx -y node@22 -p 'process.execPath')
+"$NODE22" ./bin/nemoclaw.js nemoclaw-hermes logs --follow
 ```
 
 The most common startup issue is a policy race: the sandbox starts and tries to
-connect to Slack before policies have finished loading. This resolves automatically —
-the gateway retries the connection and succeeds once policy version 7 (slack) is active.
+connect to Slack before the preset policies have finished loading. This resolves
+automatically once the preset set is attached. You may also see an onboarding warning
+that Hermes did not respond to the initial 90 second health probe even though the
+sandbox becomes healthy shortly afterward.
 
 ---
 
@@ -258,15 +279,10 @@ sandbox agent is allowed to reach. Each preset is a named YAML file in
 
 | Preset | What it opens | Notes |
 |--------|--------------|-------|
-| `slack` | `slack.com`, `api.slack.com`, Socket Mode WebSocket | Required for Slack integration |
+| `slack` | `slack.com`, `api.slack.com`, `hooks.slack.com`, Socket Mode WebSocket | Required for Slack integration and Slack Web API research |
 | `github` | `github.com`, `api.github.com` | Enables `gh` CLI and `git`; requires `GITHUB_TOKEN` |
-| `npm` | `registry.npmjs.org`, `registry.yarnpkg.com` | Package installs via npm/yarn |
-| `pypi` | `pypi.org`, `files.pythonhosted.org` | Package installs via pip/uv |
-| `huggingface` | `huggingface.co`, LFS CDN, inference router | Model downloads and HF inference |
-| `brew` | `formulae.brew.sh`, GitHub, container registries | Linuxbrew package installs |
-| `brave` | `api.search.brave.com` | Web search via Brave Search API |
+| `outlook` | `graph.microsoft.com`, `login.microsoftonline.com` | Optional WIP Outlook bridge path; not required for the main Slack/GitHub/forum workflow |
 | `nvidia-forum` | `forums.developer.nvidia.com`, `docs.nvidia.com` | NVIDIA Developer Forums and docs |
-| `wttr` | `wttr.in` | Weather lookups |
 
 To remove a preset, delete it from the `NEMOCLAW_POLICY_PRESETS` list and rebuild.
 The sandbox cannot reach any host not covered by an active preset.
@@ -279,7 +295,7 @@ The agent's system prompt (`agents/hermes/SOUL.md`) sets the sandbox context:
 - When a network request is blocked (HTTP 403 from the proxy), the agent reports
   this to the user rather than retrying with different tools
 - Tool guidance is included for GitHub (`gh` CLI), Slack channel reading, NVIDIA
-  forums, and weather
+  forums, and Outlook bridge constraints
 
 ### Agent Skills
 

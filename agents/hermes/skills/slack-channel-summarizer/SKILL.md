@@ -1,23 +1,25 @@
 ---
 name: slack-channel-summarizer
-description: Read and summarize messages from a Slack channel using the Slack Web API.
+description: Read, summarize, and compare Slack channel history using the Slack Web API.
 ---
 
 # slack-channel-summarizer
 
-Read and summarize messages from a Slack channel using the Slack Web API.
+Read, summarize, and compare messages from a Slack channel using the Slack Web API.
 
 ## When to use
 
 - Summarize recent activity in a channel
 - Review conversation history for a time range
 - Track participation and themes across messages
+- Compare Slack discussion against GitHub issues, PRs, or forum discussion
 
 ## Prerequisites
 
 - `SLACK_BOT_TOKEN` accessible as `openshell:resolve:env:SLACK_BOT_TOKEN` (the bot must be
   invited to the channel before it can read messages)
 - The bot needs the `channels:history`, `channels:read`, `users:read` OAuth scopes
+- The sandbox Slack policy permits `curl` to the Slack Web API
 
 ## Procedure
 
@@ -62,6 +64,11 @@ Organise the output as a structured summary:
 - Key themes / topics discussed
 - Active participants (resolved names)
 - Any action items or decisions
+
+If the user asked for comparison or gap analysis, extend the output with:
+- What Slack is discussing that is not represented in GitHub or forum results
+- What GitHub or forum items appear to be missing from Slack discussion
+- Clear candidate follow-ups or issue areas to investigate
 
 ## Pitfalls
 

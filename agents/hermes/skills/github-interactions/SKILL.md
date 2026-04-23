@@ -1,6 +1,6 @@
 ---
 name: github-interactions
-description: How to interact with GitHub from inside the NemoClaw sandbox — which tools are policy-approved and why curl is blocked.
+description: How to inspect GitHub issues, PRs, and repo activity from inside the NemoClaw sandbox.
 ---
 
 # github-interactions
