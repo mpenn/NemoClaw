@@ -119,16 +119,14 @@ channel, the channel cannot be resolved, or required scopes are missing.
 
 When the user gives only a Slack channel name:
 
-- First try public-channel discovery with `conversations.list?types=public_channel`.
-- Paginate that lookup up to 3 pages before concluding the public-channel pass failed.
-- Never start with `users.conversations?types=public_channel,private_channel`.
+- Use `scripts/resolve_slack_channel.py` from the Slack skill directory.
+- Never improvise a mixed `users.conversations?types=public_channel,private_channel`
+  lookup when the user gave only a channel name.
 - Never say Slack access is unavailable just because `groups:read` is missing.
   That only means private-channel discovery by name is unavailable.
-- Only try `users.conversations?types=private_channel` after the paginated
-  public-channel pass fails.
-- If private-channel discovery fails with `missing_scope: groups:read`, ask the
-  user for a direct Slack channel mention or URL instead of claiming the
-  channel history cannot be read at all.
+- If the resolver reports missing private discovery scope, ask the user for a
+  direct Slack channel mention or URL instead of claiming the channel history
+  cannot be read at all.
 
 ### NVIDIA Developer Forums
 Load the `nvidia-forum-search` skill before searching. It defines hard

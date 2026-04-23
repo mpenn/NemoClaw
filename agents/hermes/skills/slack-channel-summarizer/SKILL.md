@@ -44,6 +44,39 @@ direct Slack mention/link from the user.
   a direct Slack mention or URL. Do not say channel history is inaccessible in general.
 - If you already have a channel ID, go straight to `conversations.history`.
 - Do not use `session_search` as a substitute for Slack API discovery.
+- Use the resolver script below for channel-name lookup. Do not reimplement the
+  lookup logic ad hoc with raw Slack API calls unless you are debugging the script itself.
+
+## Resolver script
+
+Use this helper script for Slack channel resolution:
+
+`scripts/resolve_slack_channel.py`
+
+Examples:
+
+```bash
+python3 scripts/resolve_slack_channel.py --input '#nemoclaw-situation-room'
+python3 scripts/resolve_slack_channel.py --input '<#C0ALN454EH4>'
+python3 scripts/resolve_slack_channel.py --name 'nemoclaw-situation-room'
+```
+
+The script prints JSON. Important outcomes:
+
+- `{"ok": true, "stage": "direct_id", "channel_id": "..."}`
+  An ID was supplied directly or extracted from a mention/URL.
+- `{"ok": true, "stage": "public_lookup", "channel_id": "..."}`
+  The channel was found via paginated public-channel lookup.
+- `{"ok": true, "stage": "private_lookup", "channel_id": "..."}`
+  The channel was found via paginated private-channel lookup.
+- `{"ok": false, "error": "missing_private_discovery_scope", "needed": "groups:read", ...}`
+  Public lookup did not find the channel, and private discovery is blocked by missing scope.
+- `{"ok": false, "error": "channel_not_found", ...}`
+  The channel was not found in the allowed lookup paths.
+
+If the resolver returns `missing_private_discovery_scope`, ask the user for a
+direct Slack mention or channel URL. Do not claim Slack research is unavailable
+in general.
 
 ## Procedure
 
@@ -59,52 +92,20 @@ If you already know the channel ID (e.g., from a Slack mention like `<#C0ALN454E
 use it directly — skip the lookup below.
 
 If the user gives only a channel name such as `nemoclaw-situation-room`, resolve
-it yourself. Do not stop to ask the user to confirm the channel ID first.
-
-#### Public-channel discovery: try this first
-
-If the user provided only a channel name, you must do this first.
-
-Use `conversations.list` and paginate until:
-- you find the channel name, or
-- you hit a small page cap (3 pages maximum)
+it with the resolver script. Do not stop to ask the user to confirm the channel
+ID first.
 
 ```bash
-curl -s "https://api.slack.com/api/conversations.list?types=public_channel&limit=200" \
-     -H "Authorization: Bearer openshell:resolve:env:SLACK_BOT_TOKEN"
+python3 scripts/resolve_slack_channel.py --name 'nemoclaw-situation-room'
 ```
 
-If `response_metadata.next_cursor` is present and you have not reached the page
-cap, request the next page with `cursor=...`.
+Decision rule:
 
-If the channel is found here, record its `id` and continue.
-
-If the public-channel pass does not find the channel after 3 pages, only then
-move to private-channel discovery.
-
-#### Private-channel discovery: only if needed
-
-Only try private-channel discovery if:
-- the public-channel pass did not find the channel, and
-- the user may be referring to a private channel
-
-```bash
-curl -s "https://api.slack.com/api/users.conversations?types=private_channel&limit=200" \
-     -H "Authorization: Bearer openshell:resolve:env:SLACK_BOT_TOKEN"
-```
-
-Paginate this lookup too, with the same 3-page cap.
-
-If this returns `missing_scope: groups:read`, do **not** conclude that Slack
-research is unavailable. It only means the bot cannot discover private channels
-by name with the current token.
-
-At that point:
-- if the user already gave a Slack mention or URL, extract the channel ID and continue
-- otherwise ask for a direct Slack mention like `<#C123...>` or a Slack channel URL
-
-Do not replace this with `session_search`. The right fallback is a direct Slack
-mention or URL from the user.
+- If the script returns `ok: true`, use the returned `channel_id`.
+- If the script returns `missing_private_discovery_scope`, ask for a direct
+  Slack mention or channel URL.
+- If the script returns `channel_not_found`, say the channel could not be found
+  through the allowed lookup paths.
 
 ### 2. Fetch messages (newest-first)
 
@@ -162,9 +163,8 @@ If the user asked for comparison or gap analysis, extend the output with:
 
 ## Pitfalls
 
-- Do not use a single mixed `public_channel,private_channel` lookup as your
-  first move. A missing `groups:read` scope can make the agent incorrectly
-  conclude that Slack research is unavailable.
+- Do not bypass the resolver script for channel-name lookup unless you are
+  explicitly debugging the script itself.
 - The exact failure to avoid is:
   calling `users.conversations?types=public_channel,private_channel`,
   receiving `missing_scope: groups:read`,
