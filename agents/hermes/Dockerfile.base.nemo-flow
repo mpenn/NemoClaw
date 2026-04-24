@@ -1,0 +1,89 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# NeMo-Flow patched Hermes base image — extends the standard Hermes base by
+# replacing unpatched Hermes with the NeMo-Flow patched version and the
+# compiled nemo_flow Rust extension.
+#
+# Requires:
+#   1. third_party/nemo-flow/ submodule initialized
+#   2. Standard base image built/pulled first:
+#      ghcr.io/nvidia/nemoclaw/hermes-sandbox-base:latest
+#
+# ── When to rebuild ─────────────────────────────────────────────
+#   1. NeMo-Flow submodule updated     — rebuild to pick up patch/wheel changes
+#   2. HERMES_NEMO_FLOW_COMMIT bumped  — new Hermes baseline for the patch
+#   3. Standard base image changed     — rebuild to inherit updated layers
+# ────────────────────────────────────────────────────────────────
+
+# ─── Stage 1: Build nemo_flow Rust wheel ─────────────────────────────────────
+FROM python:3.11-slim AS nemo-flow-builder
+
+# Install Rust toolchain and maturin build dependencies.
+# hadolint ignore=DL3008
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl \
+        build-essential \
+        pkg-config \
+        libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Rust via rustup (stable toolchain, no PATH modification needed here).
+# hadolint ignore=DL4006
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+    | sh -s -- -y --default-toolchain stable --no-modify-path
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+RUN pip install --no-cache-dir "maturin>=1.0,<2.0"
+
+# Copy NeMo-Flow source (submodule must be initialized).
+COPY third_party/nemo-flow/ /build/nemo-flow/
+
+# Build the nemo_flow wheel. Output goes to /wheels/.
+RUN cd /build/nemo-flow && maturin build --release -o /wheels
+
+# ─── Stage 2: Patched Hermes on top of standard base ─────────────────────────
+# Inherits all layers from the standard base (apt packages, gosu, users,
+# .hermes directory structure). Only Hermes itself is replaced.
+FROM ghcr.io/nvidia/nemoclaw/hermes-sandbox-base:latest
+
+# Signal to start.sh that this is the NeMo-Flow patched image.
+ENV NEMO_FLOW_ENABLED=1
+
+# Hermes commit that the NeMo-Flow patch was written against.
+# Must match third_party/sources.lock in the NeMo-Flow submodule.
+ARG HERMES_NEMO_FLOW_COMMIT=2367c6ffd53b16daa0ffa1b338f3f9ee5587d4d5
+
+# Copy compiled nemo_flow wheel from builder stage.
+COPY --from=nemo-flow-builder /wheels/*.whl /tmp/nemo-flow-wheels/
+
+# Copy NeMo-Flow source for the patch file.
+COPY third_party/nemo-flow/ /tmp/nemo-flow/
+
+# Apply the NeMo-Flow patch to Hermes and install.
+# Tarball download avoids git pack-protocol failures common in Docker builds.
+# git init + git apply: apply the patch without needing commit history.
+# Install order: nemo_flow wheel first so pip satisfies the [nemo-flow] extra.
+# --force-reinstall replaces the unpatched Hermes already in the base image.
+# hadolint ignore=DL3013
+RUN curl -fsSL \
+        "https://github.com/NousResearch/hermes-agent/archive/${HERMES_NEMO_FLOW_COMMIT}.tar.gz" \
+        | tar -xz -C /tmp/ \
+    && mv "/tmp/hermes-agent-${HERMES_NEMO_FLOW_COMMIT}" /tmp/hermes-agent \
+    && git -C /tmp/hermes-agent init \
+    && git -C /tmp/hermes-agent apply \
+           /tmp/nemo-flow/patches/hermes-agent/0001-add-nemo-flow-integration.patch \
+    && pip3 install --no-cache-dir --break-system-packages --force-reinstall \
+           /tmp/nemo-flow-wheels/*.whl \
+           "/tmp/hermes-agent[nemo-flow,slack]" \
+           "pyyaml==6.0.3" \
+           "python-telegram-bot>=21.0" \
+           "httpx>=0.27" \
+           "slack-bolt>=1.19" \
+    && hermes --version \
+    && rm -rf /tmp/hermes-agent /tmp/nemo-flow /tmp/nemo-flow-wheels
+
+# Install NemoClaw gateway patches (httpx fix + NeMo-Flow observability) as
+# sitecustomize.py so they apply to all Python processes without runtime file writing.
+COPY agents/hermes/patches/sitecustomize-nemo-flow.py \
+     /usr/lib/python3.11/sitecustomize.py

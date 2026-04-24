@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -46,8 +45,9 @@ TOKEN_URL  = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
 GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 
 # ── Runtime config ───────────────────────────────────────────────────────────
-HERMES_URL = "http://127.0.0.1:18642/v1/chat/completions"
-HEALTH_URL = "http://127.0.0.1:18642/health"
+HERMES_URL      = "http://127.0.0.1:18642/v1/chat/completions"
+HEALTH_URL      = "http://127.0.0.1:18642/health"
+HERMES_API_KEY  = "nemoclaw-internal"  # matches API_SERVER_KEY set in start.sh
 
 MIN_POLL_INTERVAL = 5    # seconds when inbox is active
 MAX_POLL_INTERVAL = 30   # seconds when inbox is quiet
@@ -184,18 +184,21 @@ async def resolve_allowed_senders() -> set[str]:
 
 # ── Hermes relay ─────────────────────────────────────────────────────────────
 
-async def ask_hermes(prompt: str) -> str | None:
+async def ask_hermes(prompt: str) -> tuple[str | None, str | None]:
+    """Returns (reply_content, session_id). session_id is None on failure."""
     try:
         resp = await _client.post(
             HERMES_URL,
             json={"model": "hermes-agent", "messages": [{"role": "user", "content": prompt}]},
+            headers={"Authorization": f"Bearer {HERMES_API_KEY}"},
             timeout=1200,
         )
         resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"]
+        session_id = resp.headers.get("X-Hermes-Session-Id")
+        return resp.json()["choices"][0]["message"]["content"], session_id
     except Exception:
         log.exception("Error calling Hermes API")
-        return None
+        return None, None
 
 
 # ── Inbox polling ────────────────────────────────────────────────────────────
@@ -258,7 +261,7 @@ async def _handle_message(msg: dict, token: str) -> None:
     prompt = f"Email from {sender}\nSubject: {subject}\n\n{body}"
 
     log.info("Processing message from %s: %s", sender, subject)
-    reply = await ask_hermes(prompt)
+    reply, _ = await ask_hermes(prompt)
     if reply:
         await _send_reply(msg["id"], reply, token)
     await _mark_read(msg["id"], token)
@@ -353,7 +356,7 @@ async def _run_job(job: dict) -> None:
         log.warning("Job '%s' has no prompt — skipping", job.get("name", "?"))
         return
     log.info("Running scheduled job: %s", job.get("name", prompt[:50]))
-    reply = await ask_hermes(prompt)
+    reply, _ = await ask_hermes(prompt)
     if not reply:
         return
     try:

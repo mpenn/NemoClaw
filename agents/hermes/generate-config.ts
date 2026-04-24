@@ -23,6 +23,11 @@ const TOKEN_ENV: Record<string, string> = {
   slack: "SLACK_BOT_TOKEN",
 };
 
+// Secondary per-channel tokens written as additional OpenShell placeholders.
+const EXTRA_TOKEN_ENV: Record<string, string> = {
+  slack: "SLACK_APP_TOKEN",
+};
+
 // Gateway reads these env vars in _is_user_authorized — NOT config.yaml allowed_users.
 const ALLOWED_USERS_ENV: Record<string, string> = {
   telegram: "TELEGRAM_ALLOWED_USERS",
@@ -111,10 +116,16 @@ function main(): void {
   const envLines: string[] = [
     "API_SERVER_PORT=18642",
     "API_SERVER_HOST=127.0.0.1",
+    // Internal API key for session continuation (X-Hermes-Session-Id support).
+    // The Outlook bridge uses this key to trigger on_session_finalize for ATIF/Phoenix.
+    "API_SERVER_KEY=nemoclaw-internal",
   ];
   for (const ch of msgChannels) {
     if (ch in TOKEN_ENV) {
       envLines.push(`${TOKEN_ENV[ch]}=openshell:resolve:env:${TOKEN_ENV[ch]}`);
+    }
+    if (ch in EXTRA_TOKEN_ENV) {
+      envLines.push(`${EXTRA_TOKEN_ENV[ch]}=openshell:resolve:env:${EXTRA_TOKEN_ENV[ch]}`);
     }
   }
   // Write allowed-user IDs so gateway _is_user_authorized reads them from env.
@@ -124,9 +135,9 @@ function main(): void {
     }
   }
   // Suppress the "no home channel" first-message prompt without setting a real channel.
-  if (msgChannels.includes("slack")) {
-    envLines.push("SLACK_HOME_CHANNEL=none");
-  }
+    if (msgChannels.includes("slack")) {
+      envLines.push("SLACK_HOME_CHANNEL=none");
+    }
 
   const envPath = join(homedir(), ".hermes", ".env");
   writeFileSync(envPath, envLines.length > 0 ? envLines.join("\n") + "\n" : "");

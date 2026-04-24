@@ -1,0 +1,3 @@
+[submodule "third_party/nemo-flow"]
+	path = third_party/nemo-flow
+	url = git@github.com:NVIDIA/NeMo-Flow.git

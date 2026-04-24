@@ -199,17 +199,17 @@ _has_outlook_channel() {
   # making it a reliable signal that the Outlook channel was configured.
   # Secondary: NEMOCLAW_MESSAGING_CHANNELS_B64 (baked at build time, may not
   # be present if OpenShell doesn't forward Docker ENV vars).
-  [ -n "${OUTLOOK_CLIENT_ID:-}" ] || \
-    echo "${NEMOCLAW_MESSAGING_CHANNELS_B64:-W10=}" | \
-      python3 -c "import sys,base64,json; d=json.loads(base64.b64decode(sys.stdin.read().strip())); sys.exit(0 if 'outlook' in d else 1)" 2>/dev/null
+  [ -n "${OUTLOOK_CLIENT_ID:-}" ] \
+    || echo "${NEMOCLAW_MESSAGING_CHANNELS_B64:-W10=}" \
+    | python3 -c "import sys,base64,json; d=json.loads(base64.b64decode(sys.stdin.read().strip())); sys.exit(0 if 'outlook' in d else 1)" 2>/dev/null
 }
 
 configure_messaging_channels() {
   # Channel entries are baked into config.yaml at image build time via
   # NEMOCLAW_MESSAGING_CHANNELS_B64. Placeholder tokens flow through to
   # the L7 proxy for rewriting at egress.
-  [ -n "${TELEGRAM_BOT_TOKEN:-}" ] || [ -n "${DISCORD_BOT_TOKEN:-}" ] || \
-    [ -n "${SLACK_BOT_TOKEN:-}" ] || _has_outlook_channel || return 0
+  [ -n "${TELEGRAM_BOT_TOKEN:-}" ] || [ -n "${DISCORD_BOT_TOKEN:-}" ] \
+    || [ -n "${SLACK_BOT_TOKEN:-}" ] || _has_outlook_channel || return 0
 
   echo "[channels] Messaging channels active (baked at build time):" >&2
   [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && echo "[channels]   telegram" >&2
@@ -292,7 +292,10 @@ start_outlook_bridge() {
   if ! _has_outlook_channel; then
     return 0
   fi
-  [ -f /usr/local/lib/nemoclaw-bridges/outlook/outlook-bridge.py ] || { echo "[outlook-bridge] bridge script not found, skipping" >&2; return 0; }
+  [ -f /usr/local/lib/nemoclaw-bridges/outlook/outlook-bridge.py ] || {
+    echo "[outlook-bridge] bridge script not found, skipping" >&2
+    return 0
+  }
   local bridge_env
   bridge_env="HERMES_HOME=${HERMES_WRITABLE} HTTPS_PROXY=http://127.0.0.1:${DECODE_PROXY_PORT} HTTP_PROXY=http://127.0.0.1:${DECODE_PROXY_PORT} https_proxy=http://127.0.0.1:${DECODE_PROXY_PORT} http_proxy=http://127.0.0.1:${DECODE_PROXY_PORT}"
   if [ "$(id -u)" -eq 0 ]; then
@@ -393,14 +396,37 @@ if [ "$(id -u)" -ne 0 ]; then
   touch /tmp/gateway.log
   chmod 600 /tmp/gateway.log
 
-  # Start decode proxy and Hermes gateway
+  # Prepare ATIF telemetry directory (ephemeral, writable by the current user).
+  mkdir -p /tmp/atif
+  # Detect NeMo-Flow by package availability — more reliable than env var inheritance.
+  if python3 -c "import nemo_flow" 2>/dev/null; then
+    NEMO_FLOW_ENABLED=1
+  else
+    NEMO_FLOW_ENABLED=0
+  fi
+  {
+    echo "[nemo-flow] NEMO_FLOW_ENABLED=${NEMO_FLOW_ENABLED}"
+    echo "[nemo-flow] PHOENIX_COLLECTOR_ENDPOINT=${PHOENIX_COLLECTOR_ENDPOINT:-<unset>}"
+  } | tee -a /tmp/gateway.log >&2
+  PHOENIX_OPENINFERENCE_ENABLED=0
+  [ -n "${PHOENIX_COLLECTOR_ENDPOINT:-}" ] && PHOENIX_OPENINFERENCE_ENABLED=1
+  echo "[nemo-flow] PHOENIX_OPENINFERENCE_ENABLED=${PHOENIX_OPENINFERENCE_ENABLED}" | tee -a /tmp/gateway.log >&2
+
   start_decode_proxy
   HERMES_HOME="${HERMES_WRITABLE}" \
     HTTPS_PROXY="http://127.0.0.1:${DECODE_PROXY_PORT}" \
     HTTP_PROXY="http://127.0.0.1:${DECODE_PROXY_PORT}" \
     https_proxy="http://127.0.0.1:${DECODE_PROXY_PORT}" \
     http_proxy="http://127.0.0.1:${DECODE_PROXY_PORT}" \
-    nohup "$HERMES" gateway run >/tmp/gateway.log 2>&1 &
+    HERMES_NEMO_FLOW_ENABLED="${NEMO_FLOW_ENABLED:-0}" \
+    HERMES_NEMO_FLOW_ATIF_DIR="/tmp/atif" \
+    HERMES_NEMO_FLOW_ACG_ENABLED="0" \
+    HERMES_NEMO_FLOW_OPENINFERENCE_ENABLED="${PHOENIX_OPENINFERENCE_ENABLED}" \
+    HERMES_NEMO_FLOW_OPENINFERENCE_TRANSPORT="http_binary" \
+    HERMES_NEMO_FLOW_OPENINFERENCE_ENDPOINT="${PHOENIX_COLLECTOR_ENDPOINT:-}" \
+    HERMES_NEMO_FLOW_OPENINFERENCE_SERVICE_NAME="hermes-agent" \
+    API_SERVER_KEY="nemoclaw-internal" \
+    nohup "$HERMES" gateway run >>/tmp/gateway.log 2>&1 &
   GATEWAY_PID=$!
   echo "[gateway] hermes gateway launched (pid $GATEWAY_PID)" >&2
   trap cleanup SIGTERM SIGINT
@@ -428,6 +454,24 @@ touch /tmp/gateway.log
 chown gateway:gateway /tmp/gateway.log
 chmod 600 /tmp/gateway.log
 
+# Prepare ATIF telemetry directory. Root pre-creates and chowns so the
+# gateway user (launched via gosu below) can write to it.
+mkdir -p /tmp/atif
+chown gateway:gateway /tmp/atif
+# Detect NeMo-Flow by package availability — more reliable than env var inheritance.
+if python3 -c "import nemo_flow" 2>/dev/null; then
+  NEMO_FLOW_ENABLED=1
+else
+  NEMO_FLOW_ENABLED=0
+fi
+{
+  echo "[nemo-flow] NEMO_FLOW_ENABLED=${NEMO_FLOW_ENABLED}"
+  echo "[nemo-flow] PHOENIX_COLLECTOR_ENDPOINT=${PHOENIX_COLLECTOR_ENDPOINT:-<unset>}"
+} | tee -a /tmp/gateway.log >&2
+PHOENIX_OPENINFERENCE_ENABLED=0
+[ -n "${PHOENIX_COLLECTOR_ENDPOINT:-}" ] && PHOENIX_OPENINFERENCE_ENABLED=1
+echo "[nemo-flow] PHOENIX_OPENINFERENCE_ENABLED=${PHOENIX_OPENINFERENCE_ENABLED}" | tee -a /tmp/gateway.log >&2
+
 # Verify ALL symlinks in .hermes point to expected .hermes-data targets.
 validate_hermes_symlinks
 
@@ -435,14 +479,21 @@ validate_hermes_symlinks
 harden_hermes_symlinks
 
 # Start the gateway as the 'gateway' user.
-# Start decode proxy and gateway
 start_decode_proxy
 HERMES_HOME="${HERMES_WRITABLE}" \
   HTTPS_PROXY="http://127.0.0.1:${DECODE_PROXY_PORT}" \
   HTTP_PROXY="http://127.0.0.1:${DECODE_PROXY_PORT}" \
   https_proxy="http://127.0.0.1:${DECODE_PROXY_PORT}" \
   http_proxy="http://127.0.0.1:${DECODE_PROXY_PORT}" \
-  nohup gosu gateway "$HERMES" gateway run >/tmp/gateway.log 2>&1 &
+  HERMES_NEMO_FLOW_ENABLED="${NEMO_FLOW_ENABLED:-0}" \
+  HERMES_NEMO_FLOW_ATIF_DIR="/tmp/atif" \
+  HERMES_NEMO_FLOW_ACG_ENABLED="0" \
+  HERMES_NEMO_FLOW_OPENINFERENCE_ENABLED="${PHOENIX_OPENINFERENCE_ENABLED}" \
+  HERMES_NEMO_FLOW_OPENINFERENCE_TRANSPORT="http_binary" \
+  HERMES_NEMO_FLOW_OPENINFERENCE_ENDPOINT="${PHOENIX_COLLECTOR_ENDPOINT:-}" \
+  HERMES_NEMO_FLOW_OPENINFERENCE_SERVICE_NAME="hermes-agent" \
+  API_SERVER_KEY="nemoclaw-internal" \
+  nohup gosu gateway "$HERMES" gateway run >>/tmp/gateway.log 2>&1 &
 GATEWAY_PID=$!
 echo "[gateway] hermes gateway launched as 'gateway' user (pid $GATEWAY_PID)" >&2
 trap cleanup SIGTERM SIGINT
