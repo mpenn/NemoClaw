@@ -45,6 +45,12 @@ export function resolveAgent({
 /**
  * Stage build context for an agent-specific sandbox image.
  * Builds the base image if the agent defines one and it's not cached locally.
+ *
+ * For the Hermes agent: if the NeMo-Flow submodule is initialized
+ * (third_party/nemo-flow/patches/hermes-agent/0001-add-nemo-flow-integration.patch
+ * exists), builds a NeMo-Flow patched base image from Dockerfile.base.nemo-flow
+ * instead of the standard base. The patched base tag is passed as BASE_IMAGE
+ * to the main Dockerfile build.
  */
 export function createAgentSandbox(agent: AgentDefinition): {
   buildCtx: string;
@@ -52,6 +58,21 @@ export function createAgentSandbox(agent: AgentDefinition): {
 } {
   const agentDockerfile = agent.dockerfilePath;
   const baseDockerfile = agent.dockerfileBasePath;
+
+  // Detect NeMo-Flow submodule (Hermes only).
+  const nemoFlowPatch = path.join(
+    ROOT,
+    "third_party",
+    "nemo-flow",
+    "patches",
+    "hermes-agent",
+    "0001-add-nemo-flow-integration.patch",
+  );
+  const nemoFlowEnabled = agent.name === "hermes" && fs.existsSync(nemoFlowPatch);
+
+  if (nemoFlowEnabled) {
+    console.log("  NeMo-Flow telemetry enabled (patched Hermes)");
+  }
 
   if (baseDockerfile) {
     const baseImageTag = `ghcr.io/nvidia/nemoclaw/${agent.name}-sandbox-base:latest`;
@@ -70,6 +91,35 @@ export function createAgentSandbox(agent: AgentDefinition): {
     }
   }
 
+  // Build the NeMo-Flow extended base on top of the standard base.
+  let activeBaseImageTag = `ghcr.io/nvidia/nemoclaw/${agent.name}-sandbox-base:latest`;
+  if (nemoFlowEnabled) {
+    const nemoFlowBaseTag = `ghcr.io/nvidia/nemoclaw/${agent.name}-sandbox-base-nemo-flow:latest`;
+    const nemoFlowBaseDockerfile = path.join(
+      ROOT,
+      "agents",
+      agent.name,
+      "Dockerfile.base.nemo-flow",
+    );
+    const nemoFlowInspect = run(
+      `docker image inspect ${shellQuote(nemoFlowBaseTag)} >/dev/null 2>&1`,
+      { ignoreError: true },
+    );
+    if (nemoFlowInspect.status !== 0) {
+      console.log(
+        "  Building NeMo-Flow patched Hermes base image (first time only, ~5-10 min)...",
+      );
+      run(
+        `docker build -f ${shellQuote(nemoFlowBaseDockerfile)} -t ${shellQuote(nemoFlowBaseTag)} ${shellQuote(ROOT)}`,
+        { stdio: ["ignore", "inherit", "inherit"] },
+      );
+      console.log(`  ✓ NeMo-Flow base image built: ${nemoFlowBaseTag}`);
+    } else {
+      console.log(`  NeMo-Flow base image exists: ${nemoFlowBaseTag}`);
+    }
+    activeBaseImageTag = nemoFlowBaseTag;
+  }
+
   const buildCtx = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-build-"));
   fs.cpSync(ROOT, buildCtx, {
     recursive: true,
@@ -80,6 +130,14 @@ export function createAgentSandbox(agent: AgentDefinition): {
   });
   const stagedDockerfile = path.join(buildCtx, "Dockerfile");
   fs.copyFileSync(agentDockerfile!, stagedDockerfile);
+  // Bake the resolved base image tag into the staged Dockerfile so that
+  // openshell sandbox create (which doesn't support --build-arg passthrough)
+  // always builds from the correct base — NeMo-Flow patched or standard.
+  const dockerfileContent = fs.readFileSync(stagedDockerfile, "utf8");
+  fs.writeFileSync(
+    stagedDockerfile,
+    dockerfileContent.replace(/^ARG BASE_IMAGE=.*$/m, `ARG BASE_IMAGE=${activeBaseImageTag}`),
+  );
   console.log(`  Using ${agent.displayName} Dockerfile: ${agentDockerfile}`);
 
   return { buildCtx, stagedDockerfile };

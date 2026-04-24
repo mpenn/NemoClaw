@@ -1,15 +1,18 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-# Build and push the sandbox base image to GHCR.
+# Build and push sandbox base images to GHCR.
 #
 # Triggers:
-#   - Push to main when Dockerfile.base or the blueprint minimum version changes
+#   - Push to main when relevant Dockerfiles or blueprint minimum version changes
 #   - Manual dispatch for ad-hoc rebuilds
 #
-# The base image contains the expensive, rarely-changing layers (apt, gosu,
-# user setup, openclaw CLI). The production Dockerfile layers PR-specific
-# code on top via: FROM ghcr.io/nvidia/nemoclaw/sandbox-base:<tag>
+# Images built by this workflow:
+#   sandbox-base              — OpenClaw base (apt, gosu, user setup, openclaw CLI)
+#   hermes-sandbox-base       — Hermes agent base (apt, gosu, Hermes install)
+#   hermes-sandbox-base-nemo-flow — NeMo-Flow patched Hermes (requires NEMO_FLOW_DEPLOY_KEY secret)
+#
+# The production Dockerfiles layer sandbox-specific code on top of these bases.
 
 name: base-image
 
@@ -20,12 +23,19 @@ on:
       - "Dockerfile.base"
       # Dockerfile.base validates min_openclaw_version from this file at build time.
       - "nemoclaw-blueprint/blueprint.yaml"
+      - "agents/hermes/Dockerfile.base"
   workflow_dispatch:
     inputs:
       openclaw_version:
         description: "OpenClaw version to install (leave blank to use the default in Dockerfile.base)"
         required: false
         default: ""
+      nemo_flow_telemetry:
+        description: "Also build the NeMo-Flow patched Hermes base (requires NEMO_FLOW_DEPLOY_KEY secret)"
+        required: false
+        default: "false"
+        type: choice
+        options: ["false", "true"]
 
 permissions:
   contents: read
@@ -37,13 +47,14 @@ concurrency:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: nvidia/nemoclaw/sandbox-base
 
 jobs:
   build-and-push:
     if: github.repository == 'NVIDIA/NemoClaw'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      IMAGE_NAME: nvidia/nemoclaw/sandbox-base
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -87,3 +98,102 @@ jobs:
           cache-to: type=gha,mode=max
           build-args: |
             ${{ inputs.openclaw_version && format('OPENCLAW_VERSION={0}', inputs.openclaw_version) || '' }}
+
+  hermes-base:
+    if: |
+      github.repository == 'NVIDIA/NemoClaw' &&
+      (github.event_name == 'workflow_dispatch' ||
+       contains(github.event.head_commit.modified, 'agents/hermes/Dockerfile.base'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      IMAGE_NAME: nvidia/nemoclaw/hermes-sandbox-base
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest
+            type=sha,prefix=,format=short
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: agents/hermes/Dockerfile.base
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=hermes-base
+          cache-to: type=gha,scope=hermes-base,mode=max
+
+  hermes-nemo-flow-base:
+    # Only runs when nemo_flow_telemetry is explicitly set to 'true' via workflow_dispatch.
+    # Requires NEMO_FLOW_DEPLOY_KEY — a read-only deploy key for NVIDIA/NeMo-Flow
+    # added to this repo's Actions secrets.
+    if: |
+      github.repository == 'NVIDIA/NemoClaw' &&
+      github.event_name == 'workflow_dispatch' &&
+      inputs.nemo_flow_telemetry == 'true'
+    needs: hermes-base
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      IMAGE_NAME: nvidia/nemoclaw/hermes-sandbox-base-nemo-flow
+    steps:
+      - name: Checkout NemoClaw
+        uses: actions/checkout@v6
+
+      - name: Checkout NeMo-Flow submodule
+        uses: actions/checkout@v6
+        with:
+          repository: NVIDIA/NeMo-Flow
+          ssh-key: ${{ secrets.NEMO_FLOW_DEPLOY_KEY }}
+          path: third_party/nemo-flow
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest
+            type=sha,prefix=,format=short
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: agents/hermes/Dockerfile.base.nemo-flow
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=hermes-nemo-flow-base
+          cache-to: type=gha,scope=hermes-nemo-flow-base,mode=max

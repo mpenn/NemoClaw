@@ -10,6 +10,12 @@ ARG BASE_IMAGE=ghcr.io/nvidia/nemoclaw/hermes-sandbox-base:latest
 
 FROM ${BASE_IMAGE}
 
+# NeMo-Flow Phoenix OTLP endpoint — baked at image build time so start.sh
+# reads it directly from the container ENV without relying on runtime injection.
+# Empty string means no telemetry (standard behavior).
+ARG PHOENIX_COLLECTOR_ENDPOINT=""
+ENV PHOENIX_COLLECTOR_ENDPOINT=${PHOENIX_COLLECTOR_ENDPOINT}
+
 # Harden: remove unnecessary build tools and network probes
 RUN (apt-get remove --purge -y gcc gcc-12 g++ g++-12 cpp cpp-12 make \
         netcat-openbsd netcat-traditional ncat 2>/dev/null || true) \

@@ -111,6 +111,9 @@ function main(): void {
   const envLines: string[] = [
     "API_SERVER_PORT=18642",
     "API_SERVER_HOST=127.0.0.1",
+    // Internal API key for session continuation (X-Hermes-Session-Id support).
+    // The Outlook bridge uses this key to trigger on_session_finalize for ATIF/Phoenix.
+    "API_SERVER_KEY=nemoclaw-internal",
   ];
   for (const ch of msgChannels) {
     if (ch in TOKEN_ENV) {

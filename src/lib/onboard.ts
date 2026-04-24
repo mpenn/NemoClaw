@@ -120,6 +120,7 @@ const OPENAI_ENDPOINT_URL = "https://api.openai.com/v1";
 const ANTHROPIC_ENDPOINT_URL = "https://api.anthropic.com";
 const GEMINI_ENDPOINT_URL = "https://generativelanguage.googleapis.com/v1beta/openai/";
 const BRAVE_SEARCH_HELP_URL = "https://brave.com/search/api/";
+const PHOENIX_COLLECTOR_ENDPOINT_ENV = "PHOENIX_COLLECTOR_ENDPOINT";
 
 const REMOTE_PROVIDER_CONFIG = {
   build: {
@@ -1080,6 +1081,90 @@ async function configureWebSearch(existingConfig = null) {
   console.log("  ✓ Enabled Brave Web Search");
   console.log("");
   return { fetchEnabled: true };
+}
+
+/**
+ * Prompt for (or read) the Arize Phoenix OTLP endpoint for Hermes NeMo-Flow telemetry.
+ * No-op for non-Hermes agents. Returns the endpoint URL or null.
+ */
+async function configurePhoenixCollector(agent) {
+  if (!agent || agent.name !== "hermes") return null;
+
+  if (isNonInteractive()) {
+    const endpoint = normalizeCredentialValue(process.env[PHOENIX_COLLECTOR_ENDPOINT_ENV]);
+    if (!endpoint) return null;
+    saveCredential(PHOENIX_COLLECTOR_ENDPOINT_ENV, endpoint);
+    process.env[PHOENIX_COLLECTOR_ENDPOINT_ENV] = endpoint;
+    return endpoint;
+  }
+
+  const existing = getCredential(PHOENIX_COLLECTOR_ENDPOINT_ENV) || "";
+  const answer = await prompt(
+    `  Arize Phoenix OTLP endpoint (optional, e.g. http://phoenix-host:4318, leave blank to skip) [${existing || "none"}]: `,
+  );
+  const endpoint = answer.trim() || existing || null;
+  if (endpoint) {
+    saveCredential(PHOENIX_COLLECTOR_ENDPOINT_ENV, endpoint);
+    process.env[PHOENIX_COLLECTOR_ENDPOINT_ENV] = endpoint;
+    console.log(`  ✓ Phoenix OTLP endpoint saved`);
+  }
+  return endpoint || null;
+}
+
+/**
+ * Apply an inline Phoenix OTLP egress rule to the running Hermes sandbox.
+ * Parses host+port from PHOENIX_COLLECTOR_ENDPOINT and merges into the live policy.
+ */
+async function applyPhoenixEgressPolicy(sandboxName) {
+  const phoenixEndpoint =
+    getCredential(PHOENIX_COLLECTOR_ENDPOINT_ENV) ||
+    process.env[PHOENIX_COLLECTOR_ENDPOINT_ENV];
+  if (!phoenixEndpoint) return;
+
+  let phoenixHost;
+  let phoenixPort;
+  try {
+    const u = new URL(phoenixEndpoint);
+    phoenixHost = u.hostname;
+    phoenixPort = parseInt(u.port || "4318", 10);
+  } catch {
+    console.warn(`  Warning: ${PHOENIX_COLLECTOR_ENDPOINT_ENV} is not a valid URL — skipping egress rule`);
+    return;
+  }
+
+  const presetEntries = [
+    "  phoenix_collector:",
+    "    name: phoenix_collector",
+    "    endpoints:",
+    `      - host: ${phoenixHost}`,
+    `        port: ${phoenixPort}`,
+    "        protocol: rest",
+    "        enforcement: enforce",
+    "        rules:",
+    '          - allow: { method: POST, path: "/**" }',
+    "    binaries:",
+    "      - { path: /usr/bin/python3.11 }",
+  ].join("\n");
+
+  let rawPolicy = "";
+  try {
+    rawPolicy = runCapture(policies.buildPolicyGetCommand(sandboxName), { ignoreError: true });
+  } catch {
+    /* use empty baseline */
+  }
+  const currentPolicy = policies.parseCurrentPolicy(rawPolicy);
+  const merged = policies.mergePresetIntoPolicy(currentPolicy, presetEntries);
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-policy-"));
+  const tmpFile = path.join(tmpDir, "policy.yaml");
+  fs.writeFileSync(tmpFile, merged, { encoding: "utf-8", mode: 0o600 });
+  try {
+    run(policies.buildPolicySetCommand(tmpFile, sandboxName));
+    console.log(`  ✓ Phoenix OTLP egress enabled (${phoenixHost}:${phoenixPort})`);
+  } finally {
+    try { fs.unlinkSync(tmpFile); } catch { /* ignored */ }
+    try { fs.rmdirSync(tmpDir); } catch { /* ignored */ }
+  }
 }
 
 function getSandboxInferenceConfig(model, provider = null, preferredInferenceApi = null) {
@@ -3114,6 +3199,23 @@ async function createSandbox(
     const agentBuild = agentOnboard.createAgentSandbox(agent);
     buildCtx = agentBuild.buildCtx;
     stagedDockerfile = agentBuild.stagedDockerfile;
+    // Bake the Phoenix OTLP endpoint into the Hermes image so start.sh reads it
+    // directly from Docker ENV — more reliable than runtime env injection alone.
+    if (agent.name === "hermes") {
+      const phoenixEndpoint =
+        getCredential(PHOENIX_COLLECTOR_ENDPOINT_ENV) ||
+        process.env[PHOENIX_COLLECTOR_ENDPOINT_ENV];
+      if (phoenixEndpoint) {
+        const dfContent = fs.readFileSync(stagedDockerfile, "utf8");
+        fs.writeFileSync(
+          stagedDockerfile,
+          dfContent.replace(
+            /^ARG PHOENIX_COLLECTOR_ENDPOINT=.*$/m,
+            `ARG PHOENIX_COLLECTOR_ENDPOINT=${phoenixEndpoint}`,
+          ),
+        );
+      }
+    }
   } else {
     ({ buildCtx, stagedDockerfile } = stageOptimizedSandboxBuildContext(ROOT));
   }
@@ -3330,6 +3432,15 @@ async function createSandbox(
       getCredential(webSearch.BRAVE_API_KEY_ENV) || process.env[webSearch.BRAVE_API_KEY_ENV];
     if (braveKey) {
       envArgs.push(formatEnvAssignment(webSearch.BRAVE_API_KEY_ENV, braveKey));
+    }
+  }
+  // Pass Phoenix OTLP endpoint for NeMo-Flow Hermes telemetry.
+  if (agent?.name === "hermes") {
+    const phoenixEndpoint =
+      getCredential(PHOENIX_COLLECTOR_ENDPOINT_ENV) ||
+      process.env[PHOENIX_COLLECTOR_ENDPOINT_ENV];
+    if (phoenixEndpoint) {
+      envArgs.push(formatEnvAssignment(PHOENIX_COLLECTOR_ENDPOINT_ENV, phoenixEndpoint));
     }
   }
   // Pass GATEWAY_ALLOW_ALL_USERS into the sandbox at runtime when the host
@@ -6052,6 +6163,7 @@ async function onboard(opts = {}) {
         current.messagingChannels = selectedMessagingChannels;
         return current;
       });
+      await configurePhoenixCollector(agent);
       sandboxName = await createSandbox(
         gpu,
         model,
@@ -6157,6 +6269,12 @@ async function onboard(opts = {}) {
           policyPresets: appliedPolicyPresets,
         });
       }
+    }
+
+    // Apply Phoenix OTLP egress rule after policies are locked in.
+    // Only for Hermes (NeMo-Flow telemetry) and only in enforced mode.
+    if (agent?.name === "hermes" && !dangerouslySkipPermissions) {
+      await applyPhoenixEgressPolicy(sandboxName);
     }
 
     onboardSession.completeSession({ sandboxName, provider, model });
