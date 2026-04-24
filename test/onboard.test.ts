@@ -2493,7 +2493,6 @@ const { createSandbox } = require(${onboardPath});
     // Without this, a CHAT_UI_URL set in the developer's shell or CI would be
     // inherited, causing chatUiUrl to use the wrong port and making the forward
     // command assertion below fail spuriously.
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const { CHAT_UI_URL: _stripped, ...inheritedEnv } = process.env;
     const result = spawnSync(process.execPath, [scriptPath], {
       cwd: repoRoot,
