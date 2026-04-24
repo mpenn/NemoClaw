@@ -4542,6 +4542,9 @@ const MESSAGING_CHANNELS = [
     appTokenHelp: "Slack API → Your Apps → Basic Information → App-Level Tokens (xapp-...).",
     appTokenLabel: "Slack App Token (Socket Mode)",
     userIdEnvKey: "SLACK_ALLOWED_IDS",
+    userIdHelp:
+      "Open Slack, click your name/avatar → Profile → ⋮ → Copy member ID (e.g. U0887Q5UVV4).",
+    userIdLabel: "Slack Member ID (for DM access)",
     allowIdsMode: "dm",
   },
   {
@@ -4693,6 +4696,25 @@ async function setupMessagingChannels() {
       } else {
         console.log(`  Skipped ${ch.name} (no token entered)`);
         continue;
+      }
+    }
+    if (ch.appTokenEnvKey) {
+      const existingAppToken = getMessagingToken(ch.appTokenEnvKey);
+      if (existingAppToken) {
+        process.env[ch.appTokenEnvKey] = existingAppToken;
+        console.log(`  ✓ ${ch.name} app token — already configured`);
+      } else {
+        console.log(`  ${ch.appTokenHelp}`);
+        const appToken = normalizeCredentialValue(
+          await prompt(`  ${ch.appTokenLabel}: `, { secret: true }),
+        );
+        if (appToken) {
+          saveCredential(ch.appTokenEnvKey, appToken);
+          process.env[ch.appTokenEnvKey] = appToken;
+          console.log(`  ✓ ${ch.name} app token saved`);
+        } else {
+          console.log(`  Skipped ${ch.name} app token (Socket Mode will be unavailable)`);
+        }
       }
     }
     if (ch.serverIdEnvKey) {

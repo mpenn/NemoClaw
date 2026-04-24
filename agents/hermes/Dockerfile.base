@@ -100,3 +100,8 @@ RUN pip3 install --no-cache-dir --break-system-packages \
         "httpx>=0.27" \
         "slack-bolt>=1.19" \
     && hermes --version
+
+# Install NemoClaw gateway patches as sitecustomize.py so they apply to all
+# Python processes in the container without any runtime file writing.
+COPY agents/hermes/patches/sitecustomize.py \
+     /usr/lib/python3.11/sitecustomize.py

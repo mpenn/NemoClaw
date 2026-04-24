@@ -274,82 +274,6 @@ start_decode_proxy() {
   echo "[gateway] decode-proxy failed to start — placeholder rewriting may not work" >&2
 }
 
-# ── Inference httpx proxy fix ────────────────────────────────────
-# Hermes v0.10.0+ creates httpx.Client(transport=HTTPTransport(socket_options=...))
-# for TCP keepalives. A custom transport bypasses HTTPS_PROXY env-var routing,
-# so Hermes cannot reach inference.local (which has no real DNS entry — only
-# routable via the OpenShell L7 proxy).
-#
-# In the OpenShell runtime the container starts as the sandbox user (not root),
-# so /etc/hosts is not writable. A socat relay approach cannot be used.
-#
-# Fix: install a Python usercustomize.py in the sandbox user's site-packages.
-# Python auto-imports it before user code. The hook strips transport= from
-# httpx.Client() when HTTPS_PROXY is configured, causing httpx to fall back to
-# its default proxy-aware transport which routes through decode-proxy → L7 proxy.
-install_httpx_fix() {
-  local user_site="/sandbox/.local/lib/python3.11/site-packages"
-  mkdir -p "$user_site"
-  cat > "$user_site/usercustomize.py" << 'PYEOF'
-import os as _os
-
-def _patch():
-    try:
-        import httpx
-        _orig = httpx.Client.__init__
-        def _fixed(self, *a, **kw):
-            if 'transport' in kw and (
-                _os.environ.get('HTTPS_PROXY') or _os.environ.get('https_proxy')
-            ):
-                del kw['transport']
-            _orig(self, *a, **kw)
-        httpx.Client.__init__ = _fixed
-    except Exception:
-        pass
-
-_patch()
-
-# NeMo-Flow observability patch: finalize ATIF for api_server sessions.
-#
-# on_session_end fires after every run_conversation call with platform="api_server"
-# but is intentionally a no-op in nemo_flow (pitfall P-02 for multi-turn CLI sessions).
-# For the API server path, each run_conversation IS the complete session, so we
-# finalize immediately. on_session_finalize never fires from the API server path.
-import sys as _sys
-import importlib.abc as _iabc
-import importlib.util as _iutil
-
-class _PatchingLoader(_iabc.Loader):
-    def __init__(self, real):
-        self._real = real
-    def create_module(self, spec):
-        m = getattr(self._real, 'create_module', None)
-        return m(spec) if m else None
-    def exec_module(self, mod):
-        self._real.exec_module(mod)
-        def _api_server_end(session_id="", platform="", **_kw):
-            if platform == "api_server" and session_id and getattr(mod, '_NEMO_FLOW_OK', False):
-                try:
-                    mod._finalize(session_id, "api_server_end")
-                except Exception:
-                    pass
-        mod.on_session_end = _api_server_end
-
-class _NemoFlowPatcher(_iabc.MetaPathFinder):
-    def find_spec(self, fullname, path, target=None):
-        if fullname != "plugins.nemo_flow.observability":
-            return None
-        _sys.meta_path.remove(self)
-        spec = _iutil.find_spec(fullname)
-        if spec is not None:
-            spec.loader = _PatchingLoader(spec.loader)
-        return spec
-
-_sys.meta_path.insert(0, _NemoFlowPatcher())
-PYEOF
-  echo "[httpx-fix] proxy transport fix installed in ${user_site}/usercustomize.py" >&2
-}
-
 # Forward SIGTERM/SIGINT to child processes for graceful shutdown.
 OUTLOOK_BRIDGE_PID=""
 
@@ -485,8 +409,6 @@ if [ "$(id -u)" -ne 0 ]; then
   [ -n "${PHOENIX_COLLECTOR_ENDPOINT:-}" ] && PHOENIX_OPENINFERENCE_ENABLED=1
   echo "[nemo-flow] PHOENIX_OPENINFERENCE_ENABLED=${PHOENIX_OPENINFERENCE_ENABLED}" | tee -a /tmp/gateway.log >&2
 
-  # Install httpx fix, start decode proxy, and Hermes gateway
-  install_httpx_fix
   start_decode_proxy
   HERMES_HOME="${HERMES_WRITABLE}" \
     HTTPS_PROXY="http://127.0.0.1:${DECODE_PROXY_PORT}" \
@@ -554,8 +476,6 @@ validate_hermes_symlinks
 harden_hermes_symlinks
 
 # Start the gateway as the 'gateway' user.
-# Install httpx fix, start decode proxy, and gateway
-install_httpx_fix
 start_decode_proxy
 HERMES_HOME="${HERMES_WRITABLE}" \
   HTTPS_PROXY="http://127.0.0.1:${DECODE_PROXY_PORT}" \

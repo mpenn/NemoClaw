@@ -23,6 +23,11 @@ const TOKEN_ENV: Record<string, string> = {
   slack: "SLACK_BOT_TOKEN",
 };
 
+// Secondary per-channel tokens written as additional OpenShell placeholders.
+const EXTRA_TOKEN_ENV: Record<string, string> = {
+  slack: "SLACK_APP_TOKEN",
+};
+
 // Gateway reads these env vars in _is_user_authorized — NOT config.yaml allowed_users.
 const ALLOWED_USERS_ENV: Record<string, string> = {
   telegram: "TELEGRAM_ALLOWED_USERS",
@@ -119,6 +124,9 @@ function main(): void {
     if (ch in TOKEN_ENV) {
       envLines.push(`${TOKEN_ENV[ch]}=openshell:resolve:env:${TOKEN_ENV[ch]}`);
     }
+    if (ch in EXTRA_TOKEN_ENV) {
+      envLines.push(`${EXTRA_TOKEN_ENV[ch]}=openshell:resolve:env:${EXTRA_TOKEN_ENV[ch]}`);
+    }
   }
   // Write allowed-user IDs so gateway _is_user_authorized reads them from env.
   for (const [ch, ids] of Object.entries(allowedIds)) {
@@ -127,10 +135,10 @@ function main(): void {
     }
   }
   // Suppress the "no home channel" first-message prompt without setting a real channel.
-  if (msgChannels.includes("slack")) {
-    envLines.push("SLACK_HOME_CHANNEL=none");
-  }
-
+    if (msgChannels.includes("slack")) {
+      envLines.push("SLACK_HOME_CHANNEL=none");
+    }
+  
   const envPath = join(homedir(), ".hermes", ".env");
   writeFileSync(envPath, envLines.length > 0 ? envLines.join("\n") + "\n" : "");
   chmodSync(envPath, 0o600);

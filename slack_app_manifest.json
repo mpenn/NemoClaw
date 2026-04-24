@@ -1,6 +1,6 @@
 {
     "display_information": {
-        "name": "Lopp NemoClaw Staging",
+        "name": "MyUser NemoClaw",
         "description": "Posts community issue updates to a channel and responds to @mentions",
         "background_color": "#76b900"
     },
@@ -11,12 +11,12 @@
             "messages_tab_read_only_enabled": false
         },
         "bot_user": {
-            "display_name": "Lopp NemoClaw Staging",
+            "display_name": "MyUser NemoClaw",
             "always_online": false
         },
         "slash_commands": [
             {
-                "command": "/loppnemoclaw",
+                "command": "/myuser-nemoclaw",
                 "description": "Query NemoClaw",
                 "should_escape": false
             }

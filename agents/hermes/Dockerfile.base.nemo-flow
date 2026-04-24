@@ -75,9 +75,15 @@ RUN curl -fsSL \
            /tmp/nemo-flow/patches/hermes-agent/0001-add-nemo-flow-integration.patch \
     && pip3 install --no-cache-dir --break-system-packages --force-reinstall \
            /tmp/nemo-flow-wheels/*.whl \
-           "/tmp/hermes-agent[nemo-flow]" \
+           "/tmp/hermes-agent[nemo-flow,slack]" \
            "pyyaml==6.0.3" \
            "python-telegram-bot>=21.0" \
            "httpx>=0.27" \
+           "slack-bolt>=1.19" \
     && hermes --version \
     && rm -rf /tmp/hermes-agent /tmp/nemo-flow /tmp/nemo-flow-wheels
+
+# Install NemoClaw gateway patches (httpx fix + NeMo-Flow observability) as
+# sitecustomize.py so they apply to all Python processes without runtime file writing.
+COPY agents/hermes/patches/sitecustomize-nemo-flow.py \
+     /usr/lib/python3.11/sitecustomize.py

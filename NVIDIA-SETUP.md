@@ -45,25 +45,37 @@ and event subscriptions.
 
 ### 2a. Create the app from the manifest
 
-1. Go to [api.slack.com/apps](https://api.slack.com/apps) and click **Create New App**.
-2. Choose **From an app manifest**.
-3. Select the Slack workspace you want to use and click **Next**.
-4. Paste the contents of `slack_app_manifest.json` from this repo.
-5. Click **Next**, review the permissions, then click **Create**.
+1. Copy `slack_app_manifest.json` to a local file and open it in a text editor.
+2. Replace the three placeholder values with your own identifier:
+
+   | Field | Placeholder | Example replacement |
+   |-------|-------------|---------------------|
+   | `display_information.name` | `MyUser NemoClaw Staging` | `Alice NemoClaw` |
+   | `features.bot_user.display_name` | `MyUser NemoClaw Staging` | `Alice NemoClaw` |
+   | `features.slash_commands[].command` | `/myuser-nemoclaw` | `/alice-nemoclaw` |
+
+   The slash command must be lowercase and hyphen-separated. Note it down — you'll
+   see this name appear in Slack when users type `/`.
+
+3. Go to [api.slack.com/apps](https://api.slack.com/apps) and click **Create New App**.
+4. Choose **From an app manifest**, select your workspace, then click **Next**.
+5. Paste your edited manifest JSON and click **Next**, review the permissions, then click **Create**.
 
 The manifest configures:
 - Socket Mode (no public URL required)
 - Bot events: `message.im`, `message.channels`, `message.mpim`, `app_mention`
 - OAuth scopes: `im:history`, `im:read`, `channels:history`, `chat:write`,
   `reactions:write`, `users:read`, and related DM/channel permissions
-- A `/loppnemoclaw` slash command
+- Your custom slash command (e.g. `/alice-nemoclaw`)
 
 ### 2b. Enable Socket Mode
 
 1. In your new app's settings, go to **Socket Mode** in the left sidebar.
 2. Toggle **Enable Socket Mode** on.
 3. When prompted, name the app-level token (e.g. `nemoclaw-socket`) and click
-   **Generate**. Copy the token — it starts with `xapp-`.
+   **Generate**. Copy the token — it starts with `xapp-`. 
+   
+   Note - you may need to toggle socket mode off, then back on.
 
 ### 2c. Install the app to your workspace
 
@@ -135,7 +147,61 @@ NEMOCLAW_POLICY_PRESETS=npm,pypi,huggingface,brew,brave,slack,github,nvidia-foru
 
 ---
 
-## 5. Run Onboard
+## 5. Deploy Observability System (Optional)
+
+NemoClaw integrates with [Arize Phoenix](https://arize.com/docs/phoenix) for agent
+telemetry. When enabled, every conversation produces an OpenTelemetry trace with spans
+for the LLM call, each tool invocation, and the overall session — visible in the
+Phoenix UI in real time.
+
+This step is optional. Skip it if you don't need trace-level observability.
+
+### 5a. Start Phoenix
+
+In a separate terminal, pull and run the Phoenix container:
+
+```bash
+docker pull arizephoenix/phoenix:latest
+docker run --rm -p 6006:6006 -p 4317:4317 arizephoenix/phoenix:latest
+```
+
+Phoenix exposes two ports:
+- **6006** — web UI and OTLP/HTTP trace ingestion (`/v1/traces`)
+- **4317** — OTLP/gRPC trace ingestion (not used by NemoClaw)
+
+Once started, the UI is available at [http://localhost:6006](http://localhost:6006).
+
+### 5b. Configure NemoClaw to send traces
+
+Add the following to your `.env`:
+
+```
+PHOENIX_COLLECTOR_ENDPOINT=http://172.17.0.1:6006/v1/traces
+```
+
+`172.17.0.1` is the Docker bridge IP — the address the sandbox container uses to
+reach services on the host. If your Docker bridge is on a different subnet, replace
+it with the correct IP (`ip addr show docker0` to check).
+
+> **Note:** Phoenix telemetry requires the NeMo-Flow patched Hermes base image, which
+> is built automatically when the `third_party/nemo-flow` submodule is present. If
+> the submodule is not initialized, this variable is ignored.
+
+### 5c. Rebuild and verify
+
+Rebuild the sandbox to pick up the new endpoint:
+
+```bash
+set -a && source .env && set +a && node bin/nemoclaw.js <sandbox-name> rebuild --yes
+```
+
+Send a message to your bot in Slack, then open [http://localhost:6006](http://localhost:6006).
+Under **Projects → default**, you should see a new trace for each conversation turn
+with child spans for the LLM call and any tools the agent used.
+
+---
+
+## 6. Run Onboard
 
 Source `.env` before running — the NemoClaw CLI reads all configuration from
 `process.env` and does not load `.env` automatically. The `set -a` flag is
@@ -164,7 +230,7 @@ set -a && source .env && set +a && node bin/nemoclaw.js nemoclaw-hermes rebuild 
 
 ---
 
-## 6. Verify
+## 7. Verify
 
 Once onboard completes, open Slack and send a direct message to your bot. It should
 respond within a few seconds. If there is no response after 30 seconds, check logs:
