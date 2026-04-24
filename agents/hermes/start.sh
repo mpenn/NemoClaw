@@ -199,17 +199,17 @@ _has_outlook_channel() {
   # making it a reliable signal that the Outlook channel was configured.
   # Secondary: NEMOCLAW_MESSAGING_CHANNELS_B64 (baked at build time, may not
   # be present if OpenShell doesn't forward Docker ENV vars).
-  [ -n "${OUTLOOK_CLIENT_ID:-}" ] || \
-    echo "${NEMOCLAW_MESSAGING_CHANNELS_B64:-W10=}" | \
-      python3 -c "import sys,base64,json; d=json.loads(base64.b64decode(sys.stdin.read().strip())); sys.exit(0 if 'outlook' in d else 1)" 2>/dev/null
+  [ -n "${OUTLOOK_CLIENT_ID:-}" ] \
+    || echo "${NEMOCLAW_MESSAGING_CHANNELS_B64:-W10=}" \
+    | python3 -c "import sys,base64,json; d=json.loads(base64.b64decode(sys.stdin.read().strip())); sys.exit(0 if 'outlook' in d else 1)" 2>/dev/null
 }
 
 configure_messaging_channels() {
   # Channel entries are baked into config.yaml at image build time via
   # NEMOCLAW_MESSAGING_CHANNELS_B64. Placeholder tokens flow through to
   # the L7 proxy for rewriting at egress.
-  [ -n "${TELEGRAM_BOT_TOKEN:-}" ] || [ -n "${DISCORD_BOT_TOKEN:-}" ] || \
-    [ -n "${SLACK_BOT_TOKEN:-}" ] || _has_outlook_channel || return 0
+  [ -n "${TELEGRAM_BOT_TOKEN:-}" ] || [ -n "${DISCORD_BOT_TOKEN:-}" ] \
+    || [ -n "${SLACK_BOT_TOKEN:-}" ] || _has_outlook_channel || return 0
 
   echo "[channels] Messaging channels active (baked at build time):" >&2
   [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && echo "[channels]   telegram" >&2
@@ -292,7 +292,10 @@ start_outlook_bridge() {
   if ! _has_outlook_channel; then
     return 0
   fi
-  [ -f /usr/local/lib/nemoclaw-bridges/outlook/outlook-bridge.py ] || { echo "[outlook-bridge] bridge script not found, skipping" >&2; return 0; }
+  [ -f /usr/local/lib/nemoclaw-bridges/outlook/outlook-bridge.py ] || {
+    echo "[outlook-bridge] bridge script not found, skipping" >&2
+    return 0
+  }
   local bridge_env
   bridge_env="HERMES_HOME=${HERMES_WRITABLE} HTTPS_PROXY=http://127.0.0.1:${DECODE_PROXY_PORT} HTTP_PROXY=http://127.0.0.1:${DECODE_PROXY_PORT} https_proxy=http://127.0.0.1:${DECODE_PROXY_PORT} http_proxy=http://127.0.0.1:${DECODE_PROXY_PORT}"
   if [ "$(id -u)" -eq 0 ]; then

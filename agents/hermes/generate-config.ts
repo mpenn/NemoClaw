@@ -138,7 +138,7 @@ function main(): void {
     if (msgChannels.includes("slack")) {
       envLines.push("SLACK_HOME_CHANNEL=none");
     }
-  
+
   const envPath = join(homedir(), ".hermes", ".env");
   writeFileSync(envPath, envLines.length > 0 ? envLines.join("\n") + "\n" : "");
   chmodSync(envPath, 0o600);

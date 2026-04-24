@@ -62,6 +62,7 @@ and event subscriptions.
 5. Paste your edited manifest JSON and click **Next**, review the permissions, then click **Create**.
 
 The manifest configures:
+
 - Socket Mode (no public URL required)
 - Bot events: `message.im`, `message.channels`, `message.mpim`, `app_mention`
 - OAuth scopes: `im:history`, `im:read`, `channels:history`, `chat:write`,
@@ -73,8 +74,8 @@ The manifest configures:
 1. In your new app's settings, go to **Socket Mode** in the left sidebar.
 2. Toggle **Enable Socket Mode** on.
 3. When prompted, name the app-level token (e.g. `nemoclaw-socket`) and click
-   **Generate**. Copy the token — it starts with `xapp-`. 
-   
+   **Generate**. Copy the token — it starts with `xapp-`.
+
    Note - you may need to toggle socket mode off, then back on.
 
 ### 2c. Install the app to your workspace
@@ -115,7 +116,7 @@ cp env.template .env
 Open `.env` and fill in the following. Leave Outlook fields blank — they are not
 required for this setup.
 
-```
+```ini
 NEMOCLAW_AGENT=hermes
 NEMOCLAW_PROVIDER=compatible-endpoint
 NEMOCLAW_ENDPOINT_URL=https://integrate.api.nvidia.com/v1
@@ -136,7 +137,7 @@ NEMOCLAW_POLICY_PRESETS=npm,pypi,huggingface,brew,brave,slack,github,nvidia-foru
 > **Note on `SLACK_ALLOWED_IDS`:** Only the user IDs listed here can message the bot.
 > Add multiple IDs as a comma-separated list. This is the primary access control —
 > keep it to individuals who should have agent access.
-
+>
 > **Note on `GITHUB_TOKEN`:** Optional. If set, the agent can use `gh` to query
 > GitHub issues and PRs. Create a classic PAT at [github.com/settings/tokens](https://github.com/settings/tokens)
 > with `repo` scope. **NVIDIA org requirement:** after creating the token you must
@@ -166,6 +167,7 @@ docker run --rm -p 6006:6006 -p 4317:4317 arizephoenix/phoenix:latest
 ```
 
 Phoenix exposes two ports:
+
 - **6006** — web UI and OTLP/HTTP trace ingestion (`/v1/traces`)
 - **4317** — OTLP/gRPC trace ingestion (not used by NemoClaw)
 
@@ -175,7 +177,7 @@ Once started, the UI is available at [http://localhost:6006](http://localhost:60
 
 Add the following to your `.env`:
 
-```
+```ini
 PHOENIX_COLLECTOR_ENDPOINT=http://172.17.0.1:6006/v1/traces
 ```
 
@@ -213,6 +215,7 @@ set -a && source .env && set +a && node bin/nemoclaw.js onboard --non-interactiv
 ```
 
 This will:
+
 1. Pull the base sandbox image
 2. Build a sandbox container image with your configuration baked in
 3. Push it to the local OpenShell gateway
@@ -271,6 +274,7 @@ The sandbox cannot reach any host not covered by an active preset.
 ### Agent Soul
 
 The agent's system prompt (`agents/hermes/SOUL.md`) sets the sandbox context:
+
 - The agent knows it runs inside an OpenShell sandbox with a strict egress policy
 - When a network request is blocked (HTTP 403 from the proxy), the agent reports
   this to the user rather than retrying with different tools
