@@ -15,8 +15,7 @@ network_policies:
         enforcement: enforce
         rules:
           - allow: { method: GET, path: "/**" }
-          - allow: { method: POST, path: "/-/npm/v1/security/**" }
-          - allow: { method: POST, path: "/-/npm/v1/whoami" }
+          - allow: { method: HEAD, path: "/**" }
       - host: registry.yarnpkg.com
         port: 443
         protocol: rest
