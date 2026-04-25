@@ -1,81 +1,84 @@
 ---
 name: slack-channel-summarizer
-description: Read and summarize messages from a Slack channel using the Slack Web API.
+description: Read and summarize Slack channel history from inside the NemoClaw sandbox.
 ---
 
 # slack-channel-summarizer
 
-Read and summarize messages from a Slack channel using the Slack Web API.
+Use this skill to resolve a Slack channel and read its history.
 
 ## When to use
 
 - Summarize recent activity in a channel
 - Review conversation history for a time range
-- Track participation and themes across messages
+- Check what was discussed in a channel before answering a question
 
-## Prerequisites
+## Access model
 
-- `SLACK_BOT_TOKEN` accessible as `openshell:resolve:env:SLACK_BOT_TOKEN` (the bot must be
-  invited to the channel before it can read messages)
-- The bot needs the `channels:history`, `channels:read`, `users:read` OAuth scopes
+- The bot token is available as `openshell:resolve:env:SLACK_BOT_TOKEN`.
+- Slack Web API access is allowed from the sandbox.
+- The bot must be invited to a channel before it can read its history.
 
 ## Procedure
 
-### 1. Fetch messages (newest-first)
+### 1. Resolve the channel ID
 
-If you already know the channel ID (e.g., from a Slack mention like `<#C0ALN454EH4>`),
-use it directly — skip the lookup below.
+If the user gives a direct Slack mention like `<#C0ALN454EH4>`, use that ID
+directly.
 
-Use `conversations.history`. Messages are returned newest-first; paginate
-with `cursor` when there are more than 200 messages in your window:
-
-```bash
-curl -s "https://api.slack.com/api/conversations.history?channel=CHANNEL_ID&limit=50" \
-     -H "Authorization: Bearer openshell:resolve:env:SLACK_BOT_TOKEN"
-```
-
-To restrict to a time range, add `oldest=<unix_ts>` and/or `latest=<unix_ts>`.
-
-If you do **not** know the channel ID, find it first with `users.conversations`:
+If the user gives only a channel name, use the bundled resolver script:
 
 ```bash
-curl -s "https://api.slack.com/api/users.conversations?types=public_channel,private_channel&limit=200" \
-     -H "Authorization: Bearer openshell:resolve:env:SLACK_BOT_TOKEN" \
-  | python3 -c "import sys,json; [print(c['id'], c['name']) for c in json.load(sys.stdin)['channels']]"
+python3 /sandbox/.hermes-data/skills/slack-channel-summarizer/scripts/resolve_slack_channel.py --name 'CHANNEL_NAME'
 ```
 
-### 2. Resolve user IDs to display names
+Interpret the result this way:
 
-Message objects contain `user` fields with opaque IDs (e.g. `U01AB2CD3`).
-Resolve them one at a time with `users.info`:
+- `ok: true`
+  Use the returned `channel_id`.
+- `missing_private_discovery_scope`
+  Public lookup did not find the channel and private discovery by name is not
+  available with this token. Ask the user for a direct Slack channel mention or
+  a Slack channel URL.
+- `channel_not_found`
+  The channel could not be found through the allowed lookup path.
+
+### 2. Read channel history
+
+Use `conversations.history` with the resolved channel ID:
 
 ```bash
-curl -s "https://api.slack.com/api/users.info?user=U01AB2CD3" \
-     -H "Authorization: Bearer openshell:resolve:env:SLACK_BOT_TOKEN" \
-  | python3 -c "import sys,json; u=json.load(sys.stdin)['user']; print(u['real_name'])"
+curl -s "https://api.slack.com/api/conversations.history?channel=CHANNEL_ID&limit=15" \
+  -H "Authorization: Bearer openshell:resolve:env:SLACK_BOT_TOKEN"
 ```
 
-### 3. Present the summary
+If needed, add `oldest=` and `latest=` to constrain the time range.
 
-Organise the output as a structured summary:
-- Date range covered
-- Key themes / topics discussed
-- Active participants (resolved names)
-- Any action items or decisions
+Interpret common failures explicitly:
+
+- `not_in_channel`
+  The bot is not a member of that channel.
+- `missing_scope` with `needed=channels:history`
+  The bot cannot read public-channel history.
+- `missing_scope` with `needed=groups:history`
+  The bot cannot read private-channel history.
+- `channel_not_found`
+  The ID is wrong or unavailable to the token.
+
+### 3. Summarize
+
+Summarize only what the user asked for. Good defaults are:
+
+- time range covered
+- main topics
+- active participants
+- decisions or action items
 
 ## Pitfalls
 
-- `conversations.list` with `types=private_channel` requires the `groups:read` scope and
-  is slow on large workspaces — prefer `users.conversations` if you need to look up an ID.
-- The bot must be **invited** to a channel before it can read its history.
-- `search.messages` requires a **user** token, not a bot token — it will not work here.
-- `users.conversations` requires the `groups:read` scope to return private channels; if
-  the call fails with `missing_scope`, use the channel ID from the Slack mention directly.
-- Messages are returned **newest-first**; reverse the array before summarising
-  chronologically.
-- **Fetch at most 3 pages** (≤ 150 messages total with `limit=50`). Stop after 3 pages
-  regardless of whether `next_cursor` is present. Summarise what you have — do not
-  paginate indefinitely. If the user asked for a specific time range use `oldest=` and
-  `latest=` to target it directly instead of paginating forward from now.
-- Use the placeholder string `openshell:resolve:env:SLACK_BOT_TOKEN` literally in the
-  `Authorization` header — do not substitute the real token value.
+- Do not use `session_search` to discover Slack channel IDs.
+- Do not start discovery with `users.conversations?types=public_channel,private_channel`.
+- Do not say Slack access is unavailable just because `groups:read` is missing.
+  That only blocks private-channel discovery by name.
+- If the channel ID is already known, skip discovery and go straight to
+  `conversations.history`.

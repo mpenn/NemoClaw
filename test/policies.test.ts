@@ -163,8 +163,8 @@ describe("policies", () => {
       const hosts = policies.getPresetEndpoints(content);
       expect(hosts.includes("graph.microsoft.com")).toBeTruthy();
       expect(hosts.includes("login.microsoftonline.com")).toBeTruthy();
-      expect(hosts.includes("outlook.office365.com")).toBeTruthy();
-      expect(hosts.includes("outlook.office.com")).toBeTruthy();
+      expect(hosts.includes("outlook.office365.com")).toBeFalsy();
+      expect(hosts.includes("outlook.office.com")).toBeFalsy();
     });
 
     it("extracts hosts from telegram preset", () => {

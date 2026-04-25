@@ -50,8 +50,10 @@ COPY agents/hermes/bridges/ /usr/local/lib/nemoclaw-bridges/
 
 # Copy config generation script and URL-decode proxy
 COPY agents/hermes/generate-config.ts /opt/nemoclaw-generate-config.ts
+COPY agents/hermes/patch-hermes-gateway.py /opt/nemoclaw-patch-hermes-gateway.py
 COPY agents/hermes/decode-proxy.py /usr/local/bin/nemoclaw-decode-proxy
 RUN chmod 755 /usr/local/bin/nemoclaw-decode-proxy
+RUN python3 /opt/nemoclaw-patch-hermes-gateway.py
 
 # Copy blueprint (shared infrastructure)
 COPY nemoclaw-blueprint/ /opt/nemoclaw-blueprint/
@@ -61,6 +63,7 @@ COPY nemoclaw-blueprint/ /opt/nemoclaw-blueprint/
 RUN chmod -R a+rX /opt/nemoclaw-hermes-plugin/ \
     && chmod -R a+rX /opt/nemoclaw-blueprint/ \
     && chmod a+r /opt/nemoclaw-generate-config.ts \
+    && chmod a+r /opt/nemoclaw-patch-hermes-gateway.py \
     && chmod -R a+rX /usr/local/lib/nemoclaw-bridges/
 
 # Copy startup script

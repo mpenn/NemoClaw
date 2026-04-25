@@ -12,6 +12,7 @@
 //   - API server on internal port (socat forwards to public port)
 //   - Messaging platform tokens (if configured during onboard)
 //   - Agent defaults (terminal, memory, skills, display)
+//   - Slack-facing UX tweaks (less mid-turn chatter, no browser tool exposure)
 
 import { writeFileSync, chmodSync } from "node:fs";
 import { join } from "node:path";
@@ -71,9 +72,38 @@ function main(): void {
     skills: {
       creation_nudge_interval: 15,
     },
+    // Explicit Slack toolset list so the session does not advertise browser
+    // automation tools that are not intended for this sandbox workflow.
+    platform_toolsets: {
+      slack: [
+        "web",
+        "terminal",
+        "file",
+        "code_execution",
+        "vision",
+        "skills",
+        "todo",
+        "memory",
+        "session_search",
+        "clarify",
+        "delegation",
+        "cronjob",
+        "tts",
+      ],
+    },
     display: {
       compact: false,
       tool_progress: "all",
+      interim_assistant_messages: false,
+      platforms: {
+        slack: {
+          tool_progress: "all",
+        },
+      },
+    },
+    approvals: {
+      mode: "smart",
+      timeout: 60,
     },
   };
 
@@ -154,6 +184,26 @@ function toYaml(obj: Record<string, unknown>, indent: number = 0): string {
   for (const [key, value] of Object.entries(obj)) {
     if (value === null || value === undefined) {
       out += `${pad}${key}: null\n`;
+    } else if (Array.isArray(value)) {
+      if (value.length === 0) {
+        out += `${pad}${key}: []\n`;
+      } else {
+        out += `${pad}${key}:\n`;
+        for (const item of value) {
+          if (item === null || item === undefined) {
+            out += `${pad}  - null\n`;
+          } else if (Array.isArray(item)) {
+            out += `${pad}  - ${JSON.stringify(item)}\n`;
+          } else if (typeof item === "object") {
+            out += `${pad}  -\n`;
+            out += toYaml(item as Record<string, unknown>, indent + 2);
+          } else if (typeof item === "string") {
+            out += `${pad}  - ${yamlString(item)}\n`;
+          } else {
+            out += `${pad}  - ${item}\n`;
+          }
+        }
+      }
     } else if (typeof value === "object" && !Array.isArray(value)) {
       out += `${pad}${key}:\n`;
       out += toYaml(value as Record<string, unknown>, indent + 1);
