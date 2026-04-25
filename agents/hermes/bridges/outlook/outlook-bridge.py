@@ -55,6 +55,8 @@ BACKOFF_AFTER     = 3    # consecutive empty polls before backing off
 
 HEALTH_RETRY_SECONDS = 5
 HEALTH_MAX_RETRIES = 60  # 5 minutes total
+BOOTSTRAP_RETRY_SECONDS = 15
+BOOTSTRAP_RETRY_WINDOW_SECONDS = 300
 
 HERMES_HOME = os.environ.get("HERMES_HOME", "/sandbox/.hermes-data")
 JOBS_FILE = os.path.join(HERMES_HOME, "cron", "outlook-jobs.json")
@@ -180,6 +182,46 @@ async def resolve_allowed_senders() -> set[str]:
             )
             logged_waiting = True
         await asyncio.sleep(SENDER_POLL_INTERVAL)
+
+
+async def initialize_allowed_senders(shutdown: asyncio.Event) -> set[str]:
+    """Retry bridge bootstrap during startup warmup, then surface persistent failures."""
+    deadline = time.monotonic() + BOOTSTRAP_RETRY_WINDOW_SECONDS
+    last_error: Exception | None = None
+    while not shutdown.is_set():
+        try:
+            return await resolve_allowed_senders()
+        except httpx.RemoteProtocolError:
+            last_error = sys.exc_info()[1]
+            log.warning(
+                "Outlook bridge bootstrap blocked by proxy during token request. "
+                "Retrying in %ds; this commonly resolves once policy presets finish loading.",
+                BOOTSTRAP_RETRY_SECONDS,
+            )
+        except httpx.HTTPStatusError as exc:
+            last_error = exc
+            log.warning(
+                "Outlook bridge token request returned HTTP %d. Retrying in %ds.",
+                exc.response.status_code,
+                BOOTSTRAP_RETRY_SECONDS,
+            )
+        except httpx.RequestError as exc:
+            last_error = exc
+            log.warning(
+                "Outlook bridge bootstrap request failed (%s). Retrying in %ds.",
+                exc.__class__.__name__,
+                BOOTSTRAP_RETRY_SECONDS,
+            )
+        if time.monotonic() >= deadline:
+            break
+        try:
+            await asyncio.wait_for(shutdown.wait(), timeout=BOOTSTRAP_RETRY_SECONDS)
+        except asyncio.TimeoutError:
+            pass
+    if shutdown.is_set():
+        raise asyncio.CancelledError
+    assert last_error is not None
+    raise last_error
 
 
 # ── Hermes relay ─────────────────────────────────────────────────────────────
@@ -395,22 +437,7 @@ async def _async_main() -> None:
         _client = client
         await wait_for_hermes()
 
-        try:
-            ALLOWED_SENDERS = await resolve_allowed_senders()
-        except httpx.RemoteProtocolError:
-            log.error(
-                "Outlook bridge: L7 proxy disconnected during token request. "
-                "OUTLOOK_BASIC_AUTH may not be in the provider — re-run "
-                "`nemoclaw onboard` with Outlook credentials sourced to add it."
-            )
-            sys.exit(1)
-        except httpx.HTTPStatusError as exc:
-            log.error(
-                "Outlook bridge: token request returned HTTP %d. "
-                "Check OUTLOOK_CLIENT_ID / OUTLOOK_CLIENT_SECRET in the provider.",
-                exc.response.status_code,
-            )
-            sys.exit(1)
+        ALLOWED_SENDERS = await initialize_allowed_senders(shutdown)
         jobs = _load_jobs()
         log.info(
             "Bridge ready — polling inbox (%ds active / %ds quiet)",
