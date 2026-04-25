@@ -40,6 +40,7 @@ first. The source build and onboard flow assume both are available.
 ## 1. Clone and Build from Source
 
 ```bash
+umask 0022
 git clone https://github.com/mpenn/NemoClaw.git
 cd NemoClaw
 git checkout community-sentiment-issue-tracker-demo
