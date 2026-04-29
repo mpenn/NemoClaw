@@ -10,6 +10,7 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY entrypoint.sh /app/entrypoint.sh
 COPY etl.py /app/etl.py
+COPY refresh_api_views.py /app/refresh_api_views.py
 
 RUN chmod +x /app/entrypoint.sh
 

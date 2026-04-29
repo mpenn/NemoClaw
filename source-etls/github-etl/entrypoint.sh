@@ -10,6 +10,7 @@ fi
 
 while true; do
   /app/run-etl.sh
+  python3 /app/scripts/refresh_api_views.py
 
   now="$(date +%s)"
   sleep_for=$((SYNC_INTERVAL_SECONDS - (now % SYNC_INTERVAL_SECONDS)))

@@ -48,69 +48,91 @@ psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-S
 
   SET ROLE ${SOURCE_ETL_POSTGRES_APP_USER};
 
-  CREATE OR REPLACE VIEW api.github_issues AS
-    SELECT
-      org,
-      repo,
-      number,
-      state,
-      updated_at,
-      created_at,
-      closed_at,
-      title,
-      body,
-      html_url
-    FROM github_raw.issues;
+  CREATE OR REPLACE FUNCTION api.refresh_views()
+    RETURNS void
+    LANGUAGE plpgsql
+    SECURITY DEFINER
+    SET search_path = pg_catalog, public
+  AS \$refresh_views\$
+  BEGIN
+    IF to_regclass('github_raw.issues') IS NOT NULL THEN
+      EXECUTE 'CREATE OR REPLACE VIEW api.github_issues AS
+        SELECT
+          org,
+          repo,
+          number,
+          state,
+          updated_at,
+          created_at,
+          closed_at,
+          title,
+          body,
+          html_url
+        FROM github_raw.issues';
+      EXECUTE format('GRANT SELECT ON api.github_issues TO %I', '${SOURCE_ETL_POSTGRES_READER_USER}');
+    END IF;
 
-  CREATE OR REPLACE VIEW api.github_prs AS
-    SELECT
-      org,
-      repo,
-      number,
-      state,
-      updated_at,
-      created_at,
-      closed_at,
-      merged_at,
-      draft,
-      title,
-      body,
-      html_url
-    FROM github_raw.pull_requests;
+    IF to_regclass('github_raw.pull_requests') IS NOT NULL THEN
+      EXECUTE 'CREATE OR REPLACE VIEW api.github_prs AS
+        SELECT
+          org,
+          repo,
+          number,
+          state,
+          updated_at,
+          created_at,
+          closed_at,
+          merged_at,
+          draft,
+          title,
+          body,
+          html_url
+        FROM github_raw.pull_requests';
+      EXECUTE format('GRANT SELECT ON api.github_prs TO %I', '${SOURCE_ETL_POSTGRES_READER_USER}');
+    END IF;
 
-  CREATE OR REPLACE VIEW api.github_discussions AS
-    SELECT
-      org,
-      repo,
-      number,
-      updated_at,
-      created_at,
-      closed_at,
-      closed,
-      is_answered,
-      title,
-      body,
-      url
-    FROM github_raw.discussions;
+    IF to_regclass('github_raw.discussions') IS NOT NULL THEN
+      EXECUTE 'CREATE OR REPLACE VIEW api.github_discussions AS
+        SELECT
+          org,
+          repo,
+          number,
+          updated_at,
+          created_at,
+          closed_at,
+          closed,
+          is_answered,
+          title,
+          body,
+          url
+        FROM github_raw.discussions';
+      EXECUTE format('GRANT SELECT ON api.github_discussions TO %I', '${SOURCE_ETL_POSTGRES_READER_USER}');
+    END IF;
 
-  CREATE OR REPLACE VIEW api.forum_topics AS
-    SELECT
-      topic_id,
-      slug,
-      title,
-      created_at,
-      last_posted_at,
-      views,
-      like_count,
-      reply_count,
-      raw_payload,
-      raw_payload::text AS raw_payload_text
-    FROM forums_etl.forum_topics;
+    IF to_regclass('forums_etl.forum_topics') IS NOT NULL THEN
+      EXECUTE 'CREATE OR REPLACE VIEW api.forum_topics AS
+        SELECT
+          topic_id,
+          slug,
+          title,
+          created_at,
+          last_posted_at,
+          views,
+          like_count,
+          reply_count,
+          raw_payload,
+          raw_payload::text AS raw_payload_text
+        FROM forums_etl.forum_topics';
+      EXECUTE format('GRANT SELECT ON api.forum_topics TO %I', '${SOURCE_ETL_POSTGRES_READER_USER}');
+    END IF;
+
+    PERFORM pg_notify('pgrst', 'reload schema');
+  END
+  \$refresh_views\$;
+
+  SELECT api.refresh_views();
 
   RESET ROLE;
 
-  GRANT SELECT ON api.github_issues TO ${SOURCE_ETL_POSTGRES_READER_USER};
-  GRANT SELECT ON api.github_prs TO ${SOURCE_ETL_POSTGRES_READER_USER};
-  GRANT SELECT ON api.github_discussions TO ${SOURCE_ETL_POSTGRES_READER_USER};
-  GRANT SELECT ON api.forum_topics TO ${SOURCE_ETL_POSTGRES_READER_USER};
+  GRANT EXECUTE ON FUNCTION api.refresh_views() TO ${SOURCE_ETL_POSTGRES_APP_USER};
 SQL
