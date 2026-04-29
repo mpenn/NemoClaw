@@ -31,7 +31,7 @@ RUN mkdir -p /etc/apt/keyrings \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
        > /etc/apt/sources.list.d/github-cli.list \
     && apt-get update \
-    && apt-get install -y --no-install-recommends gh \
+    && apt-get install -y --no-install-recommends gh postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
 # Hermes v2026.4.13+ auto-detects HTTPS_PROXY and skips fallback-IP
@@ -83,6 +83,11 @@ ARG NEMOCLAW_INFERENCE_BASE_URL=https://inference.local/v1
 ARG CHAT_UI_URL=http://127.0.0.1:8642
 ARG NEMOCLAW_MESSAGING_CHANNELS_B64=W10=
 ARG NEMOCLAW_MESSAGING_ALLOWED_IDS_B64=e30=
+ARG SOURCE_ETL_GITHUB_REPO=
+ARG SOURCE_ETL_FORUM_TAG=
+ARG SOURCE_ETL_API_URL=
+ARG SOURCE_ETL_API_HOST=
+ARG SOURCE_ETL_API_PORT=3100
 ARG NEMOCLAW_BUILD_ID=default
 
 # Promote build-args to env vars for the config generation script.
@@ -91,7 +96,12 @@ ENV NEMOCLAW_MODEL=${NEMOCLAW_MODEL} \
     NEMOCLAW_INFERENCE_BASE_URL=${NEMOCLAW_INFERENCE_BASE_URL} \
     CHAT_UI_URL=${CHAT_UI_URL} \
     NEMOCLAW_MESSAGING_CHANNELS_B64=${NEMOCLAW_MESSAGING_CHANNELS_B64} \
-    NEMOCLAW_MESSAGING_ALLOWED_IDS_B64=${NEMOCLAW_MESSAGING_ALLOWED_IDS_B64}
+    NEMOCLAW_MESSAGING_ALLOWED_IDS_B64=${NEMOCLAW_MESSAGING_ALLOWED_IDS_B64} \
+    SOURCE_ETL_GITHUB_REPO=${SOURCE_ETL_GITHUB_REPO} \
+    SOURCE_ETL_FORUM_TAG=${SOURCE_ETL_FORUM_TAG} \
+    SOURCE_ETL_API_URL=${SOURCE_ETL_API_URL} \
+    SOURCE_ETL_API_HOST=${SOURCE_ETL_API_HOST} \
+    SOURCE_ETL_API_PORT=${SOURCE_ETL_API_PORT}
 
 WORKDIR /sandbox
 USER sandbox

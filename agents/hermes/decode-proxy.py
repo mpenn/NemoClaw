@@ -17,6 +17,7 @@ Usage: Launched by start.sh, listens on 127.0.0.1:3129.
 """
 
 import asyncio
+import os
 import sys
 from urllib.parse import unquote
 
@@ -25,6 +26,12 @@ UPSTREAM_HOST = "10.200.0.1"
 UPSTREAM_PORT = 3128
 LISTEN_HOST = "127.0.0.1"
 LISTEN_PORT = 3129
+DEBUG = os.environ.get("NEMOCLAW_DECODE_PROXY_DEBUG", "").strip().lower() in {"1", "true", "yes"}
+
+
+def _log(message: str) -> None:
+    if DEBUG:
+        print(f"[decode-proxy] {message}", file=sys.stderr, flush=True)
 
 
 async def handle_client(reader, writer):
@@ -43,6 +50,7 @@ async def handle_client(reader, writer):
         if len(parts) == 3:
             parts[1] = unquote(parts[1])
         decoded_line = " ".join(parts).encode("utf-8")
+        _log(f"request: {decoded_line.decode('utf-8', errors='replace').rstrip()}")
 
         # Read remaining headers
         headers = bytearray(decoded_line)
@@ -58,6 +66,20 @@ async def handle_client(reader, writer):
         )
         up_writer.write(bytes(headers))
         await up_writer.drain()
+
+        # For CONNECT requests, log the upstream proxy's first response line.
+        if decoded_line.startswith(b"CONNECT "):
+            upstream_status = await asyncio.wait_for(up_reader.readline(), timeout=10)
+            if upstream_status:
+                _log(f"upstream: {upstream_status.decode('utf-8', errors='replace').rstrip()}")
+                writer.write(upstream_status)
+                await writer.drain()
+                while True:
+                    line = await asyncio.wait_for(up_reader.readline(), timeout=10)
+                    writer.write(line)
+                    await writer.drain()
+                    if line == b"\r\n" or line == b"\n" or not line:
+                        break
 
         # Bidirectional relay — cancel the peer when either side closes so the
         # bridge gets an immediate EOF instead of waiting for its read timeout.

@@ -11,17 +11,9 @@ network_policies:
     endpoints:
       - host: graph.microsoft.com
         port: 443
-        protocol: rest
-        enforcement: enforce
-        rules:
-          - allow: { method: GET, path: "/**" }
-          - allow: { method: POST, path: "/**" }
-          - allow: { method: PATCH, path: "/**" }
+        access: full
       - host: login.microsoftonline.com
         port: 443
-        protocol: rest
-        enforcement: enforce
-        rules:
-          - allow: { method: POST, path: "/**" }
+        access: full
     binaries:
       - { path: /usr/bin/python3.11 }

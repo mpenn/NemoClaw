@@ -413,6 +413,7 @@ if [ "$(id -u)" -ne 0 ]; then
   echo "[nemo-flow] PHOENIX_OPENINFERENCE_ENABLED=${PHOENIX_OPENINFERENCE_ENABLED}" | tee -a /tmp/gateway.log >&2
 
   start_decode_proxy
+  export NEMOCLAW_DECODE_PROXY_DEBUG=1
   HERMES_HOME="${HERMES_WRITABLE}" \
     HTTPS_PROXY="http://127.0.0.1:${DECODE_PROXY_PORT}" \
     HTTP_PROXY="http://127.0.0.1:${DECODE_PROXY_PORT}" \
@@ -480,6 +481,7 @@ harden_hermes_symlinks
 
 # Start the gateway as the 'gateway' user.
 start_decode_proxy
+export NEMOCLAW_DECODE_PROXY_DEBUG=1
 HERMES_HOME="${HERMES_WRITABLE}" \
   HTTPS_PROXY="http://127.0.0.1:${DECODE_PROXY_PORT}" \
   HTTP_PROXY="http://127.0.0.1:${DECODE_PROXY_PORT}" \

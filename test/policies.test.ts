@@ -96,9 +96,9 @@ selectFromList(items, options)
 
 describe("policies", () => {
   describe("listPresets", () => {
-    it("returns all 13 presets", () => {
+    it("returns all 14 presets", () => {
       const presets = policies.listPresets();
-      expect(presets.length).toBe(13);
+      expect(presets.length).toBe(14);
     });
 
     it("each preset has name and description", () => {
@@ -123,6 +123,7 @@ describe("policies", () => {
         "npm",
         "nvidia-forum",
         "outlook",
+        "postgres",
         "pypi",
         "slack",
         "telegram",
@@ -171,6 +172,12 @@ describe("policies", () => {
       const content = policies.loadPreset("telegram");
       const hosts = policies.getPresetEndpoints(content);
       expect(hosts).toEqual(["api.telegram.org"]);
+    });
+
+    it("extracts host from postgres preset", () => {
+      const content = policies.loadPreset("postgres");
+      const hosts = policies.getPresetEndpoints(content);
+      expect(hosts).toEqual(["host.openshell.internal"]);
     });
 
     it("every preset has at least one endpoint", () => {
