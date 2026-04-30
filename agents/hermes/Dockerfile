@@ -6,8 +6,35 @@
 # Layers PR-specific code (plugin, config, startup script) on top of the
 # pre-built Hermes base image. Mirrors the OpenClaw Dockerfile structure.
 
+# ARGs that appear in FROM instructions must be declared before the first FROM
+# so Docker treats them as global build args (multi-stage scoping rule).
 ARG BASE_IMAGE=ghcr.io/nvidia/nemoclaw/hermes-sandbox-base:latest
 
+# ── Stage 0: build the Outlook credential sidecar binary ──────────────────────
+# PyInstaller produces a self-contained executable at a unique path
+# (/usr/local/bin/outlook-credential-sidecar), distinct from /usr/bin/python3,
+# enabling OpenShell binary-path policy enforcement to restrict token-manager
+# access to the sidecar only.
+#
+# IMPORTANT: build inside ${BASE_IMAGE}, not python:3.12-slim, so the compiled
+# binary links against the same glibc as the runtime. Using a newer builder
+# image (e.g. Debian trixie glibc 2.41) produces a binary that crashes on the
+# Ubuntu 22.04 runtime (glibc 2.35) with "GLIBC_2.38 not found".
+FROM ${BASE_IMAGE} AS sidecar-builder
+RUN apt-get update -qq \
+    && apt-get install -y --no-install-recommends binutils python3-pip libpython3.11 \
+    && rm -rf /var/lib/apt/lists/*
+RUN pip3 install --no-cache-dir --break-system-packages aiohttp pyinstaller
+COPY agents/hermes/bridges/outlook/sidecar/credential_sidecar.py /build/
+WORKDIR /build
+RUN pyinstaller \
+      --onefile \
+      --name outlook-credential-sidecar \
+      --hidden-import aiohttp \
+      --hidden-import aiohttp.web \
+      credential_sidecar.py
+
+# ── Main sandbox image ────────────────────────────────────────────────────────
 FROM ${BASE_IMAGE}
 
 # NeMo-Flow Phoenix OTLP endpoint — baked at image build time so start.sh
@@ -16,11 +43,29 @@ FROM ${BASE_IMAGE}
 ARG PHOENIX_COLLECTOR_ENDPOINT=""
 ENV PHOENIX_COLLECTOR_ENDPOINT=${PHOENIX_COLLECTOR_ENDPOINT}
 
+# Host address of the Outlook token manager (port 8765).
+# Baked at image build time using the same pattern as PHOENIX_COLLECTOR_ENDPOINT —
+# start.sh reads it as a real env var so the sidecar can open a TCP connection
+# without going through the OpenShell provider placeholder mechanism.
+# Default works on Docker Desktop (Mac/Windows) and Linux with --add-host.
+ARG TOKEN_MANAGER_HOST=host.docker.internal
+ENV TOKEN_MANAGER_HOST=${TOKEN_MANAGER_HOST}
+
+# Install the Outlook credential sidecar binary from the builder stage.
+# The distinct binary path enables OpenShell binary-path policy enforcement.
+COPY --from=sidecar-builder /build/dist/outlook-credential-sidecar /usr/local/bin/outlook-credential-sidecar
+RUN chmod 755 /usr/local/bin/outlook-credential-sidecar
+
 # Harden: remove unnecessary build tools and network probes
 RUN (apt-get remove --purge -y gcc gcc-12 g++ g++-12 cpp cpp-12 make \
         netcat-openbsd netcat-traditional ncat 2>/dev/null || true) \
     && apt-get autoremove --purge -y \
     && rm -rf /var/lib/apt/lists/*
+
+# Add dedicated user for the credential sidecar (uid 1001).
+# Running as a separate user from the sandbox (uid 1000) prevents the Hermes
+# agent from accessing the sidecar's process memory via /proc.
+RUN adduser --disabled-password --gecos "" --uid 1001 outlook-proxy
 
 # Install GitHub CLI (gh) — not in the base image.
 # GH_TOKEN is set below so gh authenticates via the OpenShell provider pipeline.

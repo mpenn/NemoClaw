@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+[project]
+name = "delegated-outlook-poc"
+version = "0.1.0"
+description = "POC: MSAL delegated OAuth flow for Outlook / Microsoft Graph"
+requires-python = ">=3.12"
+dependencies = [
+    "msal>=1.31",
+    "aiohttp>=3.9",
+    "cryptography>=42",
+]

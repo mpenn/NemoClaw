@@ -87,8 +87,6 @@ export function getCredential(key: string): string | null {
 }
 
 const CREDENTIAL_DEPENDENTS: Record<string, string[]> = {
-  OUTLOOK_CLIENT_ID: ["OUTLOOK_BASIC_AUTH"],
-  OUTLOOK_CLIENT_SECRET: ["OUTLOOK_BASIC_AUTH"],
   PHOENIX_COLLECTOR_ENDPOINT: [],
 };
 

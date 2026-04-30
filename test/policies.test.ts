@@ -162,7 +162,9 @@ describe("policies", () => {
       const content = policies.loadPreset("outlook");
       const hosts = policies.getPresetEndpoints(content);
       expect(hosts.includes("graph.microsoft.com")).toBeTruthy();
-      expect(hosts.includes("login.microsoftonline.com")).toBeTruthy();
+      // login.microsoftonline.com removed: OAuth is handled by the token manager
+      // on the host, not inside the sandbox (delegated auth via credential sidecar).
+      expect(hosts.includes("login.microsoftonline.com")).toBeFalsy();
       expect(hosts.includes("outlook.office365.com")).toBeFalsy();
       expect(hosts.includes("outlook.office.com")).toBeFalsy();
     });

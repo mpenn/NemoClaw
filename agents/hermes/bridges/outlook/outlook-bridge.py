@@ -1,21 +1,27 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
-# Outlook sidecar bridge for NemoClaw / Hermes Agent.
+# Outlook bridge for NemoClaw / Hermes Agent — delegated auth edition.
 #
 # Polls Microsoft Graph API for new emails using delta queries, relays
 # each message body to the Hermes HTTP API, and sends the reply back to the
 # sender via Graph API. Also runs scheduled jobs from cron/outlook-jobs.json.
 #
-# Credential injection: all Microsoft credential strings are hardcoded as
-# openshell:resolve:env:* placeholders. The OpenShell L7 proxy rewrites them
-# with real values at egress — no secrets are stored in the image or env file.
+# Credential injection: all Graph API requests carry
+#   Authorization: Bearer OUTLOOK_TOKEN_PLACEHOLDER
+# The credential sidecar (127.0.0.1:8766) intercepts these, swaps the
+# placeholder with the live delegated access token, and forwards to Graph.
+# The bridge never holds or requests a real token.
+#
+# To use without the sidecar (testing only), leave GRAPH_SIDECAR_URL unset;
+# requests go directly to graph.microsoft.com — but will fail without auth.
 
 import asyncio
 import datetime
 import json
 import logging
 import os
+import pathlib
 import signal
 import sys
 import time
@@ -29,46 +35,100 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-# ── OpenShell credential placeholders ───────────────────────────────────────
-# The L7 proxy rewrites these strings in outgoing HTTP request URLs and headers.
-TENANT_ID    = "openshell:resolve:env:OUTLOOK_TENANT_ID"
-BOT_MAILBOX  = "openshell:resolve:env:OUTLOOK_BOT_MAILBOX"   # polls, sends, marks read
-USER_MAILBOX = "openshell:resolve:env:OUTLOOK_USER_MAILBOX"  # default recipient for scheduled jobs
+# ── Auth placeholder ─────────────────────────────────────────────────────────
+# Sentinel swapped by the credential sidecar before the request reaches Graph.
+OUTLOOK_TOKEN_PLACEHOLDER = "OUTLOOK_TOKEN_PLACEHOLDER"
 
-# Pre-computed base64(client_id:client_secret) stored as a single OpenShell
-# credential. The L7 proxy rewrites it in the Authorization header before the
-# request reaches Microsoft, keeping individual secrets off the wire and out of
-# the image. Computed by `nemoclaw onboard` and stored as OUTLOOK_BASIC_AUTH.
-BASIC_AUTH = "openshell:resolve:env:OUTLOOK_BASIC_AUTH"
+# ── Mailbox config ───────────────────────────────────────────────────────────
+# OpenShell provider placeholder — the L7 proxy rewrites it at egress.
+# Omit OUTLOOK_TARGET_MAILBOX to use /me (the authenticated account's inbox).
+_TARGET_MAILBOX = "openshell:resolve:env:OUTLOOK_TARGET_MAILBOX"
+# OUTLOOK_REPLY_TO: address used as the recipient for outbound scheduled-job
+# emails. Separate from OUTLOOK_TARGET_MAILBOX so you can poll a bot inbox
+# while sending results to a personal account. Falls back to OUTLOOK_TARGET_MAILBOX
+# and then to "me" (the authenticated account).
+_REPLY_TO_PLACEHOLDER = "openshell:resolve:env:OUTLOOK_REPLY_TO"
 
-TOKEN_URL  = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
-GRAPH_BASE = "https://graph.microsoft.com/v1.0"
+def _mailbox_base() -> str:
+    """Graph API base path for the target mailbox."""
+    raw = os.environ.get("OUTLOOK_TARGET_MAILBOX", _TARGET_MAILBOX)
+    # Fall back to /me when unset, literally "me", or still an unrewritten placeholder.
+    if not raw or raw == "me" or raw.startswith("openshell:resolve:"):
+        return "me"
+    return f"users/{raw}"
+
+def _reply_to_address() -> str | None:
+    """Outbound recipient for scheduled jobs. None means use the job's 'to' field."""
+    raw = os.environ.get("OUTLOOK_REPLY_TO", _REPLY_TO_PLACEHOLDER)
+    if not raw or raw.startswith("openshell:resolve:"):
+        return None
+    return raw
+
+# ── Graph API base URL ───────────────────────────────────────────────────────
+# When GRAPH_SIDECAR_URL is set (e.g. http://127.0.0.1:8766), all Graph API
+# requests go to the credential sidecar over plain HTTP on loopback. The sidecar
+# injects the real bearer token and forwards to graph.microsoft.com over HTTPS.
+# Without it, requests go directly to graph.microsoft.com (testing only).
+_GRAPH_SIDECAR_URL = os.environ.get("GRAPH_SIDECAR_URL", "").rstrip("/")
+# GRAPH_BASE always ends with /v1.0 — sidecar URL is the scheme+host only.
+# Requests arrive at the sidecar as /v1.0/... paths; it forwards them to
+# https://graph.microsoft.com with the path unchanged.
+GRAPH_BASE = (f"{_GRAPH_SIDECAR_URL}/v1.0" if _GRAPH_SIDECAR_URL
+              else "https://graph.microsoft.com/v1.0")
+
+
+def _graph_url(path_or_url: str) -> str:
+    """Resolve a relative path or absolute Graph URL, routing through the sidecar."""
+    if path_or_url.startswith("https://graph.microsoft.com/v1.0") and _GRAPH_SIDECAR_URL:
+        # Rewrite delta links (absolute URLs from Graph responses) to go via sidecar
+        return path_or_url.replace("https://graph.microsoft.com/v1.0", GRAPH_BASE, 1)
+    if path_or_url.startswith("http"):
+        return path_or_url
+    return f"{GRAPH_BASE}/{path_or_url.lstrip('/')}"
+
 
 # ── Runtime config ───────────────────────────────────────────────────────────
 HERMES_URL      = "http://127.0.0.1:18642/v1/chat/completions"
 HEALTH_URL      = "http://127.0.0.1:18642/health"
-HERMES_API_KEY  = "nemoclaw-internal"  # matches API_SERVER_KEY set in start.sh
+HERMES_API_KEY  = "nemoclaw-internal"
 
-MIN_POLL_INTERVAL = 5    # seconds when inbox is active
-MAX_POLL_INTERVAL = 30   # seconds when inbox is quiet
-BACKOFF_AFTER     = 3    # consecutive empty polls before backing off
+MIN_POLL_INTERVAL = 5
+MAX_POLL_INTERVAL = 30
+BACKOFF_AFTER     = 3
 
 HEALTH_RETRY_SECONDS = 5
-HEALTH_MAX_RETRIES = 60  # 5 minutes total
+HEALTH_MAX_RETRIES = 60
 BOOTSTRAP_RETRY_SECONDS = 15
 BOOTSTRAP_RETRY_WINDOW_SECONDS = 300
 
 HERMES_HOME = os.environ.get("HERMES_HOME", "/sandbox/.hermes-data")
 JOBS_FILE = os.path.join(HERMES_HOME, "cron", "outlook-jobs.json")
-SENDER_POLL_INTERVAL = 30  # seconds between inbox checks while waiting for first email
+SENDER_POLL_INTERVAL = 30
+
+# ── Delta link persistence ───────────────────────────────────────────────────
+_DELTA_LINK_FILE = pathlib.Path(HERMES_HOME) / "outlook" / "delta-link.json"
+
+
+def _load_delta_link() -> str | None:
+    try:
+        return json.loads(_DELTA_LINK_FILE.read_text())["delta_link"]
+    except (FileNotFoundError, KeyError, json.JSONDecodeError):
+        return None
+
+
+def _save_delta_link(link: str) -> None:
+    try:
+        _DELTA_LINK_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _DELTA_LINK_FILE.write_text(json.dumps({"delta_link": link}))
+    except OSError:
+        log.warning("Could not persist delta link to %s", _DELTA_LINK_FILE)
+
 
 # ── Module-level state ───────────────────────────────────────────────────────
-_client: httpx.AsyncClient | None = None   # created in _async_main()
-_token: str = ""
-_token_expiry: float = 0.0
-_delta_link: str | None = None             # None = initialize on first poll
+_client: httpx.AsyncClient | None = None
+_delta_link: str | None = None
 _consecutive_empty: int = 0
-ALLOWED_SENDERS: set[str] = set()          # populated at startup
+ALLOWED_SENDERS: set[str] = set()
 
 
 # ── Startup health check ─────────────────────────────────────────────────────
@@ -88,43 +148,15 @@ async def wait_for_hermes() -> None:
     sys.exit(1)
 
 
-# ── Token caching ────────────────────────────────────────────────────────────
-
-async def get_access_token(*, force: bool = False) -> str:
-    global _token, _token_expiry
-    if not force and _token and time.monotonic() < _token_expiry - 60:
-        return _token
-    # RFC 6749 §2.3.1: client credentials via HTTP Basic auth so the L7 proxy
-    # can rewrite the BASIC_AUTH placeholder in the Authorization header.
-    resp = await _client.post(
-        TOKEN_URL,
-        content="grant_type=client_credentials&scope=https://graph.microsoft.com/.default",
-        headers={
-            "Authorization": f"Basic {BASIC_AUTH}",
-            "Content-Type": "application/x-www-form-urlencoded",
-        },
-        timeout=15,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    _token = data["access_token"]
-    _token_expiry = time.monotonic() + data.get("expires_in", 3600)
-    return _token
-
-
 # ── Microsoft Graph helpers ──────────────────────────────────────────────────
-# Accepts full URLs (delta links) or relative paths. Handles 401 token refresh
-# and 429 rate limiting with Retry-After backoff.
 
-async def _graph_request(method: str, path_or_url: str, token: str, **kwargs) -> dict | None:
-    url = path_or_url if path_or_url.startswith("http") else f"{GRAPH_BASE}/{path_or_url.lstrip('/')}"
-    headers = {"Authorization": f"Bearer {token}", **kwargs.pop("headers", {})}
+async def _graph_request(method: str, path_or_url: str, **kwargs) -> dict | None:
+    url = _graph_url(path_or_url)
+    headers = {
+        "Authorization": f"Bearer {OUTLOOK_TOKEN_PLACEHOLDER}",
+        **kwargs.pop("headers", {}),
+    }
     resp = await getattr(_client, method)(url, headers=headers, **kwargs)
-
-    if resp.status_code == 401:
-        token = await get_access_token(force=True)
-        headers["Authorization"] = f"Bearer {token}"
-        resp = await getattr(_client, method)(url, headers=headers, **kwargs)
 
     if resp.status_code == 429:
         retry_after = int(resp.headers.get("Retry-After", 60))
@@ -136,20 +168,20 @@ async def _graph_request(method: str, path_or_url: str, token: str, **kwargs) ->
     return resp.json() if resp.content else None
 
 
-async def graph_get(path_or_url: str, token: str) -> dict:
-    return await _graph_request("get", path_or_url, token, timeout=15)
+async def graph_get(path_or_url: str) -> dict:
+    return await _graph_request("get", path_or_url, timeout=15)
 
 
-async def graph_post(path_or_url: str, payload: dict, token: str) -> None:
+async def graph_post(path_or_url: str, payload: dict) -> None:
     await _graph_request(
-        "post", path_or_url, token,
+        "post", path_or_url,
         json=payload, headers={"Content-Type": "application/json"}, timeout=15,
     )
 
 
-async def graph_patch(path_or_url: str, payload: dict, token: str) -> None:
+async def graph_patch(path_or_url: str, payload: dict) -> None:
     await _graph_request(
-        "patch", path_or_url, token,
+        "patch", path_or_url,
         json=payload, headers={"Content-Type": "application/json"}, timeout=10,
     )
 
@@ -157,35 +189,40 @@ async def graph_patch(path_or_url: str, payload: dict, token: str) -> None:
 # ── Allowed-senders resolution ───────────────────────────────────────────────
 
 async def resolve_allowed_senders() -> set[str]:
-    # Discover USER_MAILBOX's SMTP address from BOT_MAILBOX's inbox.
-    # Retries indefinitely — sandbox stays up, bridge activates on first email.
-    # Mail.Read (Application, already required) covers both mailboxes tenant-wide.
-    # User.Read.All is NOT required.
+    """Return the set of allowed sender addresses.
+
+    Reads OUTLOOK_ALLOWED_SENDERS env var (comma-separated) if set.
+    Otherwise waits for the first email in the target inbox and uses
+    that sender — preserving the original "activate by sending a message" UX.
+    """
+    configured = os.environ.get("OUTLOOK_ALLOWED_SENDERS", "").strip()
+    if configured:
+        senders = {addr.strip().lower() for addr in configured.split(",") if addr.strip()}
+        log.info("Allowed senders from OUTLOOK_ALLOWED_SENDERS: %s", senders)
+        return senders
+
+    # Discover from inbox — wait for first email
     logged_waiting = False
     while True:
-        token = await get_access_token()
         data = await graph_get(
-            f"users/{BOT_MAILBOX}/mailFolders/inbox/messages"
-            "?$top=10&$select=from&$orderby=receivedDateTime desc",
-            token,
+            f"{_mailbox_base()}/mailFolders/inbox/messages"
+            "?$top=10&$select=from&$orderby=receivedDateTime desc"
         )
         for msg in data.get("value", []):
             address = msg.get("from", {}).get("emailAddress", {}).get("address", "").lower()
             if "@" in address:
-                log.info("Allowed senders resolved via bot inbox: %s", address)
+                log.info("Allowed senders discovered via inbox: %s", address)
                 return {address}
-
         if not logged_waiting:
             log.info(
-                "Bot inbox empty — waiting for first email from USER_MAILBOX to BOT_MAILBOX. "
-                "Send a message to activate the bridge."
+                "Inbox empty — waiting for first email to activate the bridge. "
+                "Send a message or set OUTLOOK_ALLOWED_SENDERS to skip discovery."
             )
             logged_waiting = True
         await asyncio.sleep(SENDER_POLL_INTERVAL)
 
 
 async def initialize_allowed_senders(shutdown: asyncio.Event) -> set[str]:
-    """Retry bridge bootstrap during startup warmup, then surface persistent failures."""
     deadline = time.monotonic() + BOOTSTRAP_RETRY_WINDOW_SECONDS
     last_error: Exception | None = None
     while not shutdown.is_set():
@@ -194,23 +231,21 @@ async def initialize_allowed_senders(shutdown: asyncio.Event) -> set[str]:
         except httpx.RemoteProtocolError:
             last_error = sys.exc_info()[1]
             log.warning(
-                "Outlook bridge bootstrap blocked by proxy during token request. "
-                "Retrying in %ds; this commonly resolves once policy presets finish loading.",
+                "Outlook bridge bootstrap blocked by proxy. "
+                "Retrying in %ds; resolves once policy presets finish loading.",
                 BOOTSTRAP_RETRY_SECONDS,
             )
         except httpx.HTTPStatusError as exc:
             last_error = exc
             log.warning(
-                "Outlook bridge token request returned HTTP %d. Retrying in %ds.",
-                exc.response.status_code,
-                BOOTSTRAP_RETRY_SECONDS,
+                "Graph request returned HTTP %d. Retrying in %ds.",
+                exc.response.status_code, BOOTSTRAP_RETRY_SECONDS,
             )
         except httpx.RequestError as exc:
             last_error = exc
             log.warning(
-                "Outlook bridge bootstrap request failed (%s). Retrying in %ds.",
-                exc.__class__.__name__,
-                BOOTSTRAP_RETRY_SECONDS,
+                "Bridge bootstrap request failed (%s). Retrying in %ds.",
+                exc.__class__.__name__, BOOTSTRAP_RETRY_SECONDS,
             )
         if time.monotonic() >= deadline:
             break
@@ -227,7 +262,6 @@ async def initialize_allowed_senders(shutdown: asyncio.Event) -> set[str]:
 # ── Hermes relay ─────────────────────────────────────────────────────────────
 
 async def ask_hermes(prompt: str) -> tuple[str | None, str | None]:
-    """Returns (reply_content, session_id). session_id is None on failure."""
     try:
         resp = await _client.post(
             HERMES_URL,
@@ -247,21 +281,18 @@ async def ask_hermes(prompt: str) -> tuple[str | None, str | None]:
 
 async def poll_inbox() -> int:
     global _delta_link
-    token = await get_access_token()
 
-    # Graph delta queries for messages don't support $filter — filter client-side instead.
     path = (
         _delta_link
-        or f"users/{BOT_MAILBOX}/mailFolders/inbox/messages/delta"
+        or f"{_mailbox_base()}/mailFolders/inbox/messages/delta"
            "?$select=id,subject,body,from,isRead"
     )
 
     messages: list[dict] = []
     try:
-        data = await graph_get(path, token)
+        data = await graph_get(path)
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code in (400, 410):
-            # Delta link expired (syncStateNotFound) — reset and retry from scratch next poll
             log.warning("Delta link expired (status %d) — resetting state", exc.response.status_code)
             _delta_link = None
             return 0
@@ -273,15 +304,17 @@ async def poll_inbox() -> int:
             if not msg.get("@removed") and not msg.get("isRead", False)
         )
         if next_link := data.get("@odata.nextLink"):
-            data = await graph_get(next_link, token)
+            data = await graph_get(next_link)
         else:
             break
+
     if dl := data.get("@odata.deltaLink"):
         _delta_link = dl
+        _save_delta_link(dl)
 
     if messages:
         results = await asyncio.gather(
-            *[_handle_message(msg, token) for msg in messages],
+            *[_handle_message(msg) for msg in messages],
             return_exceptions=True,
         )
         for r in results:
@@ -291,11 +324,11 @@ async def poll_inbox() -> int:
     return len(messages)
 
 
-async def _handle_message(msg: dict, token: str) -> None:
+async def _handle_message(msg: dict) -> None:
     sender = msg.get("from", {}).get("emailAddress", {}).get("address", "").lower()
     if ALLOWED_SENDERS and sender not in ALLOWED_SENDERS:
         log.info("Ignoring message from non-allowed sender: %s", sender)
-        await _mark_read(msg["id"], token)
+        await _mark_read(msg["id"])
         return
 
     subject = msg.get("subject", "(no subject)")
@@ -305,25 +338,24 @@ async def _handle_message(msg: dict, token: str) -> None:
     log.info("Processing message from %s: %s", sender, subject)
     reply, _ = await ask_hermes(prompt)
     if reply:
-        await _send_reply(msg["id"], reply, token)
-    await _mark_read(msg["id"], token)
+        await _send_reply(msg["id"], reply)
+    await _mark_read(msg["id"])
 
 
-async def _send_reply(msg_id: str, reply: str, token: str) -> None:
+async def _send_reply(msg_id: str, reply: str) -> None:
     try:
         await graph_post(
-            f"users/{BOT_MAILBOX}/messages/{msg_id}/reply",
+            f"{_mailbox_base()}/messages/{msg_id}/reply",
             {"comment": reply},
-            token,
         )
         log.info("Sent reply to message %s", msg_id)
     except Exception:
         log.exception("Error sending reply for message %s", msg_id)
 
 
-async def _mark_read(msg_id: str, token: str) -> None:
+async def _mark_read(msg_id: str) -> None:
     try:
-        await graph_patch(f"users/{BOT_MAILBOX}/messages/{msg_id}", {"isRead": True}, token)
+        await graph_patch(f"{_mailbox_base()}/messages/{msg_id}", {"isRead": True})
     except Exception:
         log.exception("Error marking message %s as read", msg_id)
 
@@ -346,7 +378,6 @@ async def _poll_loop(shutdown: asyncio.Event) -> None:
             _consecutive_empty += 1
             interval = MAX_POLL_INTERVAL if _consecutive_empty >= BACKOFF_AFTER else MIN_POLL_INTERVAL
 
-        # shutdown.wait() lets SIGTERM wake us immediately instead of sleeping the full interval
         try:
             await asyncio.wait_for(shutdown.wait(), timeout=interval)
         except asyncio.TimeoutError:
@@ -375,7 +406,7 @@ async def _job_loop(jobs: list[dict], shutdown: asyncio.Event) -> None:
     while not shutdown.is_set():
         try:
             now = datetime.datetime.now()
-            if now.day != last_day:  # reset daily-fire flags at midnight
+            if now.day != last_day:
                 for job in jobs:
                     job.pop("_fired_today", None)
                 last_day = now.day
@@ -383,7 +414,7 @@ async def _job_loop(jobs: list[dict], shutdown: asyncio.Event) -> None:
             for job in jobs:
                 if job.get("time") == time_str and not job.get("_fired_today"):
                     job["_fired_today"] = True
-                    asyncio.create_task(_run_job(job))  # fire in background, doesn't block loop
+                    asyncio.create_task(_run_job(job))
         except Exception:
             log.exception("Error in job loop tick")
         try:
@@ -402,11 +433,11 @@ async def _run_job(job: dict) -> None:
     if not reply:
         return
     try:
-        token = await get_access_token()
-        to_address = job.get("to", USER_MAILBOX)
+        # Precedence: job-level "to" > OUTLOOK_REPLY_TO > OUTLOOK_TARGET_MAILBOX > "me"
+        to_address = job.get("to") or _reply_to_address() or os.environ.get("OUTLOOK_TARGET_MAILBOX") or "me"
         subject = job.get("subject", f"Scheduled: {job.get('name', 'report')}")
         await graph_post(
-            f"users/{BOT_MAILBOX}/sendMail",
+            f"{_mailbox_base()}/sendMail",
             {
                 "message": {
                     "subject": subject,
@@ -414,7 +445,6 @@ async def _run_job(job: dict) -> None:
                     "toRecipients": [{"emailAddress": {"address": to_address}}],
                 }
             },
-            token,
         )
         log.info("Sent scheduled email for job '%s' to %s", job.get("name", "?"), to_address)
     except Exception:
@@ -424,18 +454,25 @@ async def _run_job(job: dict) -> None:
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 async def _async_main() -> None:
-    global _client, ALLOWED_SENDERS
-    log.info("Outlook bridge starting (HERMES_HOME=%s)", HERMES_HOME)
+    global _client, _delta_link, ALLOWED_SENDERS
+    log.info(
+        "Outlook bridge starting (HERMES_HOME=%s, GRAPH_BASE=%s, mailbox=%s)",
+        HERMES_HOME, GRAPH_BASE, _mailbox_base(),
+    )
 
     shutdown = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, lambda: (log.info("Shutdown signal received"), shutdown.set()))
 
-    # httpx.AsyncClient reads HTTPS_PROXY from env automatically
     async with httpx.AsyncClient() as client:
         _client = client
         await wait_for_hermes()
+
+        # Restore delta link from previous run — avoids re-processing old mail
+        _delta_link = _load_delta_link()
+        if _delta_link:
+            log.info("Restored delta link from %s", _DELTA_LINK_FILE)
 
         ALLOWED_SENDERS = await initialize_allowed_senders(shutdown)
         jobs = _load_jobs()
