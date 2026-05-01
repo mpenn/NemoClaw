@@ -22,7 +22,8 @@ was communicated, or pulling context from recent correspondence.
 - All Graph API requests go through the credential sidecar on `127.0.0.1:8766`.
 - Use `Authorization: Bearer OUTLOOK_TOKEN_PLACEHOLDER` — the sidecar swaps
   this for a live delegated token before forwarding to `graph.microsoft.com`.
-- `GRAPH_SIDECAR_URL` is already set in the environment; the helper script reads it.
+- The helper script reads `GRAPH_SIDECAR_URL` from the environment or from
+  `/sandbox/.hermes-data/.env`, and defaults to `http://127.0.0.1:8766`.
 - **Two mailbox env vars** — understand the distinction:
   - `OUTLOOK_REPLY_TO` — the **human owner's** personal address (e.g. `you@nvidia.com`).
     When the user says "my emails", this is what they mean. This is the

@@ -20,6 +20,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 OUTLOOK_TOKEN_PLACEHOLDER = "OUTLOOK_TOKEN_PLACEHOLDER"
 
@@ -33,8 +34,42 @@ _WELL_KNOWN_FOLDERS = {
 }
 
 
+def _load_env_file(path: Path) -> dict[str, str]:
+    loaded: dict[str, str] = {}
+    if not path.is_file():
+        return loaded
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        loaded[key.strip()] = value.strip()
+    return loaded
+
+
+def _env_optional(name: str, *, allow_placeholder: bool = True) -> str:
+    value = os.environ.get(name, "").strip()
+    if value and (allow_placeholder or not value.startswith("openshell:resolve:")):
+        return value
+
+    candidates: list[Path] = []
+    hermes_home = os.environ.get("HERMES_HOME", "").strip()
+    if hermes_home:
+        candidates.append(Path(hermes_home) / ".env")
+    candidates.extend([
+        Path("/sandbox/.hermes-data/.env"),
+        Path("/sandbox/.hermes/.env"),
+    ])
+
+    for env_path in candidates:
+        file_value = _load_env_file(env_path).get(name, "").strip()
+        if file_value and (allow_placeholder or not file_value.startswith("openshell:resolve:")):
+            return file_value
+    return ""
+
+
 def _graph_base() -> str:
-    sidecar = os.environ.get("GRAPH_SIDECAR_URL", "http://127.0.0.1:8766").rstrip("/")
+    sidecar = (_env_optional("GRAPH_SIDECAR_URL") or "http://127.0.0.1:8766").rstrip("/")
     return f"{sidecar}/v1.0"
 
 
@@ -43,8 +78,8 @@ def _mailbox() -> str:
     # OUTLOOK_TARGET_MAILBOX is the agent's polling mailbox (e.g. agt-you@nvidia.com).
     # "my emails" means the human's inbox, so prefer REPLY_TO.
     for env_key in ("OUTLOOK_REPLY_TO", "OUTLOOK_TARGET_MAILBOX"):
-        raw = os.environ.get(env_key, "").strip()
-        if raw and not raw.startswith("openshell:resolve:"):
+        raw = _env_optional(env_key, allow_placeholder=False)
+        if raw:
             return f"users/{raw}"
     return "me"
 
