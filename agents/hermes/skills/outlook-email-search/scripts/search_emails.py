@@ -73,15 +73,25 @@ def _graph_base() -> str:
     return f"{sidecar}/v1.0"
 
 
-def _mailbox() -> str:
+def _mailbox(which: str = "auto") -> str:
     # OUTLOOK_REPLY_TO is the human owner's personal address (e.g. you@nvidia.com).
     # OUTLOOK_TARGET_MAILBOX is the agent's polling mailbox (e.g. agt-you@nvidia.com).
     # "my emails" means the human's inbox, so prefer REPLY_TO.
-    for env_key in ("OUTLOOK_REPLY_TO", "OUTLOOK_TARGET_MAILBOX"):
+    if which in {"reply", "human"}:
+        env_keys = ("OUTLOOK_REPLY_TO",)
+    elif which in {"target", "agent"}:
+        env_keys = ("OUTLOOK_TARGET_MAILBOX",)
+    else:
+        env_keys = ("OUTLOOK_REPLY_TO", "OUTLOOK_TARGET_MAILBOX")
+    for env_key in env_keys:
         raw = _env_optional(env_key, allow_placeholder=False)
         if raw:
             return f"users/{raw}"
     return "me"
+
+
+def _odata_string(value: str) -> str:
+    return value.replace("'", "''")
 
 
 def _graph_get(path: str) -> dict:
@@ -134,8 +144,8 @@ def _parse_date(value: str) -> str:
 def _build_params(args: argparse.Namespace) -> dict[str, str]:
     """Build OData query parameters.
 
-    $search (KQL) handles free-text and subject lookups.
-    $filter handles sender, date range, and read-status — combinable with $search.
+    $search handles free-text lookups only.
+    $filter handles subject, sender, date range, and read-status.
     $orderby is omitted when $search is present (Graph API constraint).
     """
     search_terms: list[str] = []
@@ -144,29 +154,30 @@ def _build_params(args: argparse.Namespace) -> dict[str, str]:
     if args.query:
         search_terms.append(args.query)
 
-    if args.subject:
-        # KQL subject: prefix scopes the search to subject field
-        search_terms.append(f'subject:"{args.subject}"')
-
-    if args.sender:
-        # Exact sender match is more reliable via $filter than KQL from:
-        filters.append(f"from/emailAddress/address eq '{args.sender}'")
-
+    # When ordering by receivedDateTime, Graph requires receivedDateTime
+    # restrictions to appear before other fields in $filter.
     if args.since:
         filters.append(f"receivedDateTime ge {_parse_date(args.since)}")
 
     if args.until:
         filters.append(f"receivedDateTime le {_parse_date(args.until)}")
 
+    if args.subject:
+        filters.append(f"contains(subject,'{_odata_string(args.subject)}')")
+
+    if args.sender:
+        # Exact sender match is more reliable via $filter than KQL from:
+        filters.append(f"from/emailAddress/address eq '{_odata_string(args.sender)}'")
+
     if args.unread:
         filters.append("isRead eq false")
 
     params: dict[str, str] = {
         "$select": "id,subject,from,receivedDateTime,isRead,hasAttachments,bodyPreview",
-        "$top": str(min(args.top, 50)),
+        "$top": str(50 if search_terms and filters else min(args.top, 50)),
     }
 
-    if search_terms:
+    if search_terms and not filters:
         params["$search"] = f'"{" ".join(search_terms)}"'
         # $orderby is incompatible with $search in Graph API
     else:
@@ -176,6 +187,22 @@ def _build_params(args: argparse.Namespace) -> dict[str, str]:
         params["$filter"] = " and ".join(filters)
 
     return params
+
+
+def _query_matches(msg: dict, query: str | None) -> bool:
+    if not query:
+        return True
+    terms = [term.strip("\"'").lower() for term in query.split() if term.strip("\"'")]
+    if not terms:
+        return True
+    from_addr = msg.get("from", {}).get("emailAddress", {})
+    haystack = " ".join([
+        msg.get("subject", ""),
+        msg.get("bodyPreview", ""),
+        from_addr.get("address", ""),
+        from_addr.get("name", ""),
+    ]).lower()
+    return all(term in haystack for term in terms)
 
 
 def _fetch_body(mailbox: str, msg_id: str) -> str:
@@ -191,13 +218,16 @@ def _fetch_body(mailbox: str, msg_id: str) -> str:
 
 
 def search_messages(args: argparse.Namespace) -> list[dict]:
-    mailbox = _mailbox()
+    mailbox = _mailbox(args.mailbox)
     folder = _WELL_KNOWN_FOLDERS.get(args.folder.lower(), args.folder)
     params = _build_params(args)
     path = f"{mailbox}/mailFolders/{folder}/messages?{urllib.parse.urlencode(params)}"
 
     data = _graph_get(path)
-    messages = data.get("value", [])
+    messages = [
+        msg for msg in data.get("value", [])
+        if _query_matches(msg, args.query if params.get("$search") is None else None)
+    ][:args.top]
 
     results = []
     for msg in messages:
@@ -233,6 +263,10 @@ def main() -> int:
                         help="Messages before this date (YYYY-MM-DD)")
     parser.add_argument("--folder", default="inbox",
                         help="Folder to search: inbox (default), sent, drafts, archive, junk")
+    parser.add_argument("--mailbox", choices=("auto", "reply", "human", "target", "agent"),
+                        default="auto",
+                        help=("Mailbox to search: auto/reply/human searches the human owner; "
+                              "target/agent searches the agent polling mailbox"))
     parser.add_argument("--top", type=int, default=20,
                         help="Max results to return (default 20, max 50)")
     parser.add_argument("--unread", action="store_true",

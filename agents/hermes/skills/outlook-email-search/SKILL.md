@@ -57,6 +57,7 @@ python3 /sandbox/.hermes-data/skills/outlook-email-search/scripts/search_emails.
 | `--since DATE` | Messages after date (`2026-04-01`, or relative `7d`, `2w`, `1m`) |
 | `--until DATE` | Messages before date |
 | `--folder NAME` | `inbox` (default), `sent`, `drafts`, `archive`, `junk` |
+| `--mailbox NAME` | `auto`/`reply`/`human` for the human owner (default), `target`/`agent` for the agent polling mailbox |
 | `--top N` | Max results (default 20, max 50) |
 | `--unread` | Unread messages only |
 | `--body` | Fetch full body text (makes one extra Graph request per message) |
@@ -169,6 +170,11 @@ python3 .../search_emails.py --query "project update" --folder sent --since 2w
 python3 .../search_emails.py --subject "Q1 report" --since 2026-04-01 --until 2026-04-30
 ```
 
+**Debug an incoming email sent to the agent mailbox:**
+```bash
+python3 .../search_emails.py --mailbox target --subject "Agent Labs Summary" --since 7d --body
+```
+
 ## Pitfalls
 
 - `--body` is significantly slower — it makes one Graph request per message.
@@ -176,11 +182,20 @@ python3 .../search_emails.py --subject "Q1 report" --since 2026-04-01 --until 20
 - `--query` uses KQL full-text search; `--orderby` (newest first) is dropped
   when `--query` is active (Graph API constraint). Results are still relevant
   but not date-sorted.
-- `--subject` and `--query` can be combined. Both are passed to Graph as KQL.
+- Treat `--query` as plain free text, not Graph KQL. Use `--subject`,
+  `--from`, `--since`, and `--until` for field-specific searches rather than
+  strings like `subject:"..."` or `from:person@example.com`.
+- `--subject` and `--query` can be combined. The script uses Graph filters for
+  structured fields and local matching when Graph cannot combine filters with
+  full-text search.
 - `--from` uses OData `$filter` for an exact email match. Do not use it for
   partial name matching — use `--query "from:Name"` instead.
 - Searches target the human's mailbox (`OUTLOOK_REPLY_TO`), not the agent's
   polling mailbox (`OUTLOOK_TARGET_MAILBOX`). The agent has delegated access to
   read the human's mail via `Mail.ReadWrite.Shared`.
+- If a request arrives by email, the request email itself is already in the
+  prompt and lives in the agent polling mailbox. Do not search the human mailbox
+  for the task email's sender/subject unless the user explicitly asks for that
+  message; search the user's requested topic instead.
 - Do not claim Outlook is unavailable just because one search returns no results.
   Try a broader query or different date range first.
