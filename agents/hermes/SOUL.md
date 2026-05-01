@@ -32,9 +32,10 @@ when a request clearly matches it, then follow it with the normal tools.
 
 Never call a skill name as a tool directly. These are skill names:
 - `slack-channel-summarizer`
-- `github-interactions`
-- `nvidia-forum-search`
 - `cross-source-gap-analysis`
+- `outlook-email-search`
+- `slack-channel-finder`
+- `source-etl-query`
 
 Load these skills when relevant:
 - Slack channel history or summaries -> `slack-channel-summarizer`

@@ -19,9 +19,9 @@ multiple sources rather than merely access one source.
 Load the source skills you need first:
 
 - `slack-channel-summarizer`
+- `slack-channel-finder`
 - `source-etl-query`
-- `github-interactions`
-- `nvidia-forum-search`
+- `outlook-email-search`
 
 This skill does not define how to access those systems. It defines how to
 combine the findings once you have them.

@@ -37,8 +37,6 @@ flowchart LR
               subgraph sourceSkills["Source Skills"]
                   direction LR
                   s1["source-etl-query"]
-                  s2["github-interactions"]
-                  s3["nvidia-forum-search"]
                   s4["cross-source-gap-analysis"]
               end
 
@@ -669,7 +667,7 @@ Skills are loaded on demand by the agent when relevant to a task. They live in
 | Skill | Purpose |
 |-------|---------|
 | `source-etl-query` | Query the host-side PostgREST bridge for mirrored GitHub and NVIDIA forum data. This is the primary data-access skill for both GitHub and forum research. |
-| `github-interactions` | GitHub repo research (issues, PRs, discussions) — routes through the source-etls REST mirror, not live GitHub egress. |
-| `nvidia-forum-search` | NVIDIA Developer Forum research — routes through the source-etls REST mirror, not live forum egress. |
 | `slack-channel-summarizer` | Resolve Slack channels by name or ID and read their message history via the Slack Web API. |
+| `slack-channel-finder` | Discover Slack channels by topic, team, or domain and infer what each channel is for. |
 | `cross-source-gap-analysis` | Synthesize findings across Slack, GitHub, and NVIDIA forum sources to identify gaps, alignment issues, and follow-ups. |
+| `outlook-email-search` | Search the Outlook mailbox via Microsoft Graph to find and read emails that help answer user questions. |
