@@ -72,10 +72,16 @@ async def fetch_token() -> str:
     # (Routing through the decode-proxy would mis-attribute to python3.11.)
     if not SESSION_ID:
         raise ValueError("OUTLOOK_SESSION_UUID not set — cannot fetch token without session_id")
-    token_url = f"http://{TOKEN_MANAGER_HOST}:{TOKEN_MANAGER_PORT}/token?session_id={SESSION_ID}"
+    # Pass the session UUID in a header, not a query param.
+    # OpenShell's plain-HTTP forward proxy resolves openshell:resolve:env:* placeholders
+    # only in HTTP headers, not in URL query strings. Putting SESSION_ID (which may be a
+    # placeholder string when running inside the sandbox) in X-Session-Id ensures the proxy
+    # rewrites it to the real UUID before the request reaches the token manager.
+    token_url = f"http://{TOKEN_MANAGER_HOST}:{TOKEN_MANAGER_PORT}/token"
     async with aiohttp.ClientSession(trust_env=True) as session:
         async with session.get(
             token_url,
+            headers={"X-Session-Id": SESSION_ID},
             timeout=aiohttp.ClientTimeout(total=15),
         ) as resp:
             resp.raise_for_status()

@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Combined stack: PostgreSQL + Phoenix telemetry + Outlook token manager.
+# Usage: docker compose up --build
+# Auth credentials are passed via nemoclaw onboard — no .env file required.
+
+services:
+
+  # postgres:
+
+  # github-scraper:
+
+  # nv-forum-scraper:
+
+  # discord-scraper:
+
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    ports:
+      - "6006:6006"   # Phoenix UI
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+
+  outlook-token-manager:
+    build: ./outlook-token-manager
+    volumes:
+      - token-cache:/token-cache
+    ports:
+      - "8765:8765"   # Token manager API
+      - "51247:51247" # OAuth redirect callback
+    stdin_open: true
+    tty: true
+
+volumes:
+  postgres-data:
+  token-cache:

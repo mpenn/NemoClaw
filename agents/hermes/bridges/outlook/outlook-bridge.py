@@ -92,9 +92,10 @@ HERMES_URL      = "http://127.0.0.1:18642/v1/chat/completions"
 HEALTH_URL      = "http://127.0.0.1:18642/health"
 HERMES_API_KEY  = "nemoclaw-internal"
 
-MIN_POLL_INTERVAL = 5
-MAX_POLL_INTERVAL = 30
-BACKOFF_AFTER     = 3
+MIN_POLL_INTERVAL      = 5
+MAX_POLL_INTERVAL      = 5
+BACKOFF_AFTER          = 3
+MAX_CONCURRENT_MESSAGES = 5  # max simultaneous ask_hermes calls
 
 HEALTH_RETRY_SECONDS = 5
 HEALTH_MAX_RETRIES = 60
@@ -129,6 +130,8 @@ _client: httpx.AsyncClient | None = None
 _delta_link: str | None = None
 _consecutive_empty: int = 0
 ALLOWED_SENDERS: set[str] = set()
+_in_flight: set[str] = set()
+_sem = asyncio.Semaphore(MAX_CONCURRENT_MESSAGES)
 
 
 # ── Startup health check ─────────────────────────────────────────────────────
@@ -312,16 +315,11 @@ async def poll_inbox() -> int:
         _delta_link = dl
         _save_delta_link(dl)
 
-    if messages:
-        results = await asyncio.gather(
-            *[_handle_message(msg) for msg in messages],
-            return_exceptions=True,
-        )
-        for r in results:
-            if isinstance(r, Exception):
-                log.exception("Error handling message: %s", r)
+    new_messages = [m for m in messages if m["id"] not in _in_flight]
+    for msg in new_messages:
+        asyncio.create_task(_handle_message_guarded(msg))
 
-    return len(messages)
+    return len(new_messages)
 
 
 async def _handle_message(msg: dict) -> None:
@@ -340,6 +338,18 @@ async def _handle_message(msg: dict) -> None:
     if reply:
         await _send_reply(msg["id"], reply)
     await _mark_read(msg["id"])
+
+
+async def _handle_message_guarded(msg: dict) -> None:
+    msg_id = msg["id"]
+    _in_flight.add(msg_id)
+    try:
+        async with _sem:
+            await _handle_message(msg)
+    except Exception:
+        log.exception("Error handling message %s", msg_id)
+    finally:
+        _in_flight.discard(msg_id)
 
 
 async def _send_reply(msg_id: str, reply: str) -> None:

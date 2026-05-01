@@ -6,7 +6,8 @@
 # External API (port TOKEN_MANAGER_PORT, default 8765):
 #   POST /auth/start             — initiate auth flow; returns session_id (UUID4)
 #   GET  /auth/poll?session_id=X — poll for completion
-#   GET  /token?session_id=X     — retrieve live access token
+#   GET  /token                  — retrieve live access token (X-Session-Id header,
+#                                  or ?session_id= query param for curl testing)
 #   GET  /health                 — service health + session list (no session_ids)
 #
 # OAuth callback server (port OAUTH_REDIRECT_PORT, default 51247):
@@ -48,27 +49,24 @@ CACHE_PASSPHRASE = os.environ.get("TOKEN_CACHE_PASSPHRASE")
 HTTP_PORT = int(os.environ.get("TOKEN_MANAGER_PORT", "8765"))
 OAUTH_REDIRECT_PORT = int(os.environ.get("OAUTH_REDIRECT_PORT", "51247"))
 OAUTH_REDIRECT_URI = f"http://localhost:{OAUTH_REDIRECT_PORT}"
-# "browser" uses authorization code + PKCE (works with NVIDIA Conditional Access).
-# "device" uses device code flow (blocked by NVIDIA CA policy, kept for non-NVIDIA tenants).
-AUTH_TYPE = os.environ.get("OUTLOOK_AUTH_TYPE", "browser")
-LOGIN_HINT = os.environ.get("OUTLOOK_TARGET_MAILBOX", "")
 REFRESH_BUFFER_SECONDS = 600  # refresh 10 min before expiry
 PENDING_CLEANUP_INTERVAL = 60  # seconds between expired-flow cleanup runs
 COMPLETED_TTL = 300  # seconds to keep _completed entries after browser callback
 
-_DEFAULT_CLIENT_ID = os.environ.get("OUTLOOK_CLIENT_ID")
-_DEFAULT_TENANT_ID = os.environ.get("OUTLOOK_TENANT_ID")
-_DEFAULT_CLIENT_SECRET = os.environ.get("OUTLOOK_CLIENT_SECRET")
+# Session config is persisted alongside the MSAL cache so sessions survive
+# token manager restarts without re-auth. Credentials (client_id, tenant_id,
+# login_hint) are written here when a session is first authenticated.
+SESSION_CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(CACHE_FILE)), "sessions.json")
 
 SCOPES = [
-    "https://graph.microsoft.com/Mail.Read",
-    "https://graph.microsoft.com/Mail.Read.Shared",
-    "https://graph.microsoft.com/Mail.ReadWrite",
-    "https://graph.microsoft.com/Mail.ReadWrite.Shared",
-    "https://graph.microsoft.com/Mail.Send",
-    "https://graph.microsoft.com/MailboxSettings.Read",
-    "https://graph.microsoft.com/MailboxSettings.ReadWrite",
-    "User.Read",
+#    "https://graph.microsoft.com/Mail.Read",
+#    "https://graph.microsoft.com/Mail.Read.Shared",
+#    "https://graph.microsoft.com/Mail.ReadWrite",
+#    "https://graph.microsoft.com/Mail.ReadWrite.Shared",
+#    "https://graph.microsoft.com/Mail.Send",
+#    "https://graph.microsoft.com/MailboxSettings.Read",
+#    "https://graph.microsoft.com/MailboxSettings.ReadWrite",
+#    "User.Read",
 ]
 
 # ── Token cache (optionally encrypted at rest) ────────────────────────────────
@@ -108,6 +106,34 @@ def save_cache(cache: msal.SerializableTokenCache) -> None:
     with open(CACHE_FILE, "wb") as f:
         f.write(data)
     log.info("Saved %s token cache to %s", "encrypted" if CACHE_PASSPHRASE else "plaintext", CACHE_FILE)
+
+
+# ── Session config persistence ────────────────────────────────────────────────
+
+def _load_session_configs() -> list[dict]:
+    try:
+        with open(SESSION_CONFIG_FILE) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+
+
+def _save_session_configs() -> None:
+    configs = [
+        {
+            "session_id": state.session_id,
+            "client_id": state.client_id,
+            "tenant_id": state.tenant_id,
+            "login_hint": state.username,
+        }
+        for state in _sessions.values()
+    ]
+    try:
+        os.makedirs(os.path.dirname(SESSION_CONFIG_FILE), exist_ok=True)
+        with open(SESSION_CONFIG_FILE, "w") as f:
+            json.dump(configs, f, indent=2)
+    except OSError:
+        log.warning("Could not persist session config to %s", SESSION_CONFIG_FILE)
 
 
 # ── Data model ────────────────────────────────────────────────────────────────
@@ -189,6 +215,7 @@ def _promote_to_session(pending: PendingFlow, username: str, result: dict) -> Ap
     save_cache(state.cache)
     _sessions[pending.session_id] = state
     _pending.pop(pending.session_id, None)
+    _save_session_configs()
     state.refresh_task = asyncio.get_event_loop().create_task(
         _refresh_loop(state), name=f"refresh-{pending.session_id[:8]}"
     )
@@ -275,12 +302,12 @@ async def handle_auth_start(request: web.Request) -> web.Response:
     except Exception:
         pass
 
-    client_id = body.get("client_id") or _DEFAULT_CLIENT_ID
-    tenant_id = body.get("tenant_id") or _DEFAULT_TENANT_ID
-    client_secret = body.get("client_secret") or _DEFAULT_CLIENT_SECRET
+    client_id = body.get("client_id")
+    tenant_id = body.get("tenant_id")
+    client_secret = body.get("client_secret")
     scopes = body.get("scopes", SCOPES)
-    auth_type = body.get("type", AUTH_TYPE)
-    login_hint = body.get("login_hint", LOGIN_HINT)
+    auth_type = body.get("type", "browser")
+    login_hint = body.get("login_hint", "")
 
     if not client_id or not tenant_id:
         return web.Response(
@@ -489,7 +516,9 @@ async def handle_auth_poll(request: web.Request) -> web.Response:
 
 
 async def handle_token(request: web.Request) -> web.Response:
-    session_id = request.rel_url.query.get("session_id")
+    # Accept session_id from X-Session-Id header (preferred: OpenShell resolves the
+    # openshell:resolve:env:* placeholder there) or query param (direct / curl use).
+    session_id = request.headers.get("X-Session-Id") or request.rel_url.query.get("session_id")
     if not session_id:
         return web.Response(
             status=400,
@@ -647,25 +676,36 @@ async def main() -> None:
     global _cache
     _cache = load_cache()
 
-    # Restore sessions from cache for the default app.
-    if _DEFAULT_CLIENT_ID and _DEFAULT_TENANT_ID:
-        probe = _build_msal_app(_DEFAULT_CLIENT_ID, _DEFAULT_TENANT_ID, _DEFAULT_CLIENT_SECRET, _cache)
-        cached_accounts = probe.get_accounts()
-        if cached_accounts:
-            log.info("Found %d cached account(s) — attempting session restore", len(cached_accounts))
-        for account in cached_accounts:
+    # Restore sessions from persisted config file. Each entry records the
+    # session_id that the sidecar already knows, so OUTLOOK_SESSION_UUID in
+    # the sidecar continues to work across token manager restarts without
+    # requiring re-onboarding.
+    session_configs = _load_session_configs()
+    if session_configs:
+        log.info("Restoring %d session(s) from %s", len(session_configs), SESSION_CONFIG_FILE)
+    for cfg in session_configs:
+        sid = cfg.get("session_id")
+        client_id = cfg.get("client_id")
+        tenant_id = cfg.get("tenant_id")
+        login_hint = cfg.get("login_hint", "")
+        if not (sid and client_id and tenant_id):
+            log.warning("Skipping malformed session config: %s", cfg)
+            continue
+        app = _build_msal_app(client_id, tenant_id, None, _cache)
+        accounts = app.get_accounts(username=login_hint) if login_hint else app.get_accounts()
+        if not accounts and login_hint:
+            accounts = app.get_accounts()
+        restored = False
+        for account in accounts:
             username = account.get("username", "")
-            # Each restored account gets its own MSAL app for refresh isolation.
-            app = _build_msal_app(_DEFAULT_CLIENT_ID, _DEFAULT_TENANT_ID, _DEFAULT_CLIENT_SECRET, _cache)
             result = app.acquire_token_silent(SCOPES, account=account)
             if result and "access_token" in result:
-                sid = str(uuid.uuid4())
                 state = AppState(
                     session_id=sid,
-                    client_id=_DEFAULT_CLIENT_ID,
-                    tenant_id=_DEFAULT_TENANT_ID,
+                    client_id=client_id,
+                    tenant_id=tenant_id,
                     username=username,
-                    client_secret=_DEFAULT_CLIENT_SECRET,
+                    client_secret=None,
                     app=app,
                     cache=_cache,
                 )
@@ -679,8 +719,13 @@ async def main() -> None:
                     "Session restored: session_id=%s username=%s expires=%s",
                     sid, username, state.expires_at_iso,
                 )
-            else:
-                log.warning("Silent restore failed for cached account %s — re-auth required", username)
+                restored = True
+                break
+        if not restored:
+            log.warning(
+                "Silent restore failed for session_id=%s login_hint=%s — re-auth required",
+                sid, login_hint or "(none)",
+            )
 
     # Main API server
     api_app = web.Application()
@@ -705,64 +750,6 @@ async def main() -> None:
     log.info("OAuth redirect listener on 0.0.0.0:%d", OAUTH_REDIRECT_PORT)
 
     asyncio.get_event_loop().create_task(_cleanup_pending(), name="cleanup-pending")
-
-    # If no sessions were restored, start the initial auth flow.
-    if _DEFAULT_CLIENT_ID and _DEFAULT_TENANT_ID and not _sessions:
-        loop = asyncio.get_event_loop()
-        app = _build_msal_app(_DEFAULT_CLIENT_ID, _DEFAULT_TENANT_ID, _DEFAULT_CLIENT_SECRET, _cache)
-        sid = str(uuid.uuid4())
-
-        if AUTH_TYPE == "browser":
-            log.info("No cached sessions — initiating browser auth code flow…")
-            flow = await loop.run_in_executor(
-                None,
-                lambda: app.initiate_auth_code_flow(
-                    scopes=SCOPES,
-                    redirect_uri=OAUTH_REDIRECT_URI,
-                    **({"login_hint": LOGIN_HINT} if LOGIN_HINT else {}),
-                ),
-            )
-            if "auth_uri" in flow:
-                _pending[sid] = PendingFlow(
-                    session_id=sid,
-                    client_id=_DEFAULT_CLIENT_ID,
-                    tenant_id=_DEFAULT_TENANT_ID,
-                    client_secret=_DEFAULT_CLIENT_SECRET,
-                    app=app,
-                    cache=_cache,
-                    flow_type="browser",
-                    auth_code_flow=flow,
-                )
-                print(
-                    f"\nOpen this URL in your browser to authenticate:\n\n"
-                    f"  {flow['auth_uri']}\n\n"
-                    f"Note: port {OAUTH_REDIRECT_PORT} must be forwarded from your local"
-                    f" machine to this host.\n",
-                    flush=True,
-                )
-            else:
-                log.error("Failed to initiate browser flow: %s", flow)
-        else:
-            log.info("No cached sessions — initiating device code flow…")
-            flow = await loop.run_in_executor(
-                None, lambda: app.initiate_device_flow(scopes=SCOPES)
-            )
-            if "user_code" in flow:
-                _pending[sid] = PendingFlow(
-                    session_id=sid,
-                    client_id=_DEFAULT_CLIENT_ID,
-                    tenant_id=_DEFAULT_TENANT_ID,
-                    client_secret=_DEFAULT_CLIENT_SECRET,
-                    app=app,
-                    cache=_cache,
-                    flow_type="device",
-                    device_flow=flow,
-                    flow_expires_at=time.time() + flow.get("expires_in", 900),
-                )
-                print("\n" + flow["message"] + "\n", flush=True)
-                loop.create_task(
-                    _wait_for_device_flow(_pending[sid]), name=f"device-flow-{sid[:8]}"
-                )
 
     while True:
         await asyncio.sleep(3600)
