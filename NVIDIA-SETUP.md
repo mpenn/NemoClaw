@@ -363,7 +363,7 @@ Target ETL defaults:
 
 The ETL implementation lives under `source-etls/` and runs on the host, outside
 OpenShell. Start it after the first onboard step creates the OpenShell gateway
-network; the exact commands are in [7b. Start the host-side source ETLs](#7b-start-the-host-side-source-etls).
+network; the exact commands are in [8b. Start the host-side source ETLs](#8b-start-the-host-side-source-etls).
 
 This brings up four containers:
 
@@ -408,7 +408,7 @@ This step is optional. Skip it if you do not need trace-level observability.
 ### 6a. Start Phoenix
 
 Phoenix is included in the unified `extras/docker-compose.yml` stack. It starts
-automatically when you bring up the extras stack in step 7b — no separate container
+automatically when you bring up the extras stack in step 8b — no separate container
 run is needed.
 
 Phoenix exposes three ports:
@@ -439,7 +439,7 @@ host. If your Docker bridge uses a different subnet, replace it with the correct
 ### 6c. If Enabling Phoenix After Onboard
 
 If you enable Phoenix after the sandbox already exists, rebuild the sandbox so the
-image picks up the new endpoint, then rerun the policy apply in step 7c. If you
+image picks up the new endpoint, then rerun the policy apply in step 8c. If you
 are iterating on the NeMo-Flow submodule or `Dockerfile.base.nemo-flow`, drop the
 cached patched base image before rebuilding so Docker does not reuse an old local
 base:
@@ -459,9 +459,43 @@ you should see a new trace for each conversation turn.
 
 ---
 
-## 7. Run Onboard, Start ETLs, and Apply Policy
+## 7. Outlook Authentication (Interactive)
 
-### 7a. Run onboard
+The Outlook bridge uses delegated auth — the token manager authenticates as your
+user via Microsoft Entra ID and caches a refresh token in `sessions.json`. This
+happens once interactively during onboard; subsequent non-interactive onboards
+reuse the saved session.
+
+### 7a. Forward port 51247 before running onboard
+
+The token manager's OAuth redirect callback listens on port 51247. When you
+authenticate via the browser flow, Microsoft redirects your browser to
+`http://localhost:51247/` to complete the handshake. If you are running on a
+**remote host** (SSH, cloud VM, VS Code remote), your browser cannot reach that
+port unless it is forwarded to your local machine first.
+
+Forward the port before starting onboard:
+
+**VS Code Remote:** Open the **Ports** tab (bottom panel) → **Forward a Port** → enter `51247`.
+
+**SSH:** Add a local forward to your SSH command:
+
+```bash
+ssh -L 51247:localhost:51247 user@your-host
+```
+
+You can close the forward after onboard completes and the session UUID is saved.
+
+> **Device code flow:** If you cannot forward port 51247, onboard will fall back
+> to device code flow automatically. It will print a URL and one-time code — open
+> `https://microsoft.com/devicelogin` in any browser, enter the code, and sign in.
+> No port forwarding is required for device code flow.
+
+---
+
+## 8. Run Onboard, Start ETLs, and Apply Policy
+
+### 8a. Run onboard
 
 Source `.env` before running. The NemoClaw CLI reads all configuration from
 `process.env` and does not load `.env` automatically. The `set -a` flag is required
@@ -470,7 +504,7 @@ so variables are exported to child processes.
 ```bash
 set -a && source .env && set +a
 export NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE=1
-nemoclaw onboard --non-interactive
+nemoclaw onboard
 ```
 
 This will:
@@ -511,7 +545,7 @@ export NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE=1
 nemoclaw nemoclaw-hermes rebuild --yes
 ```
 
-### 7b. Start the host-side source ETLs
+### 8b. Start the host-side source ETLs
 
 After onboard has created the OpenShell gateway network, start the unified extras
 stack (Phoenix, Outlook token manager, Postgres, ETLs, PostgREST):
@@ -524,7 +558,7 @@ docker compose -f extras/docker-compose.yml ps
 This starts the first 72-hour backfill immediately. The GitHub and forum ETLs
 then refresh hourly.
 
-### 7c. Update and apply the network policy
+### 8c. Update and apply the network policy
 
 The sandbox policy must allow the live IP address that Docker assigns to the
 `source-etls-postgrest` container. This IP is assigned at container start and can
@@ -553,7 +587,7 @@ included.
 
 ---
 
-## 8. Verify
+## 9. Verify
 
 First verify the host-side mirror is serving data:
 
@@ -583,7 +617,7 @@ nemoclaw nemoclaw-hermes logs --follow
 
 The most common startup issue in this flow is a missing final policy apply: the
 sandbox can be healthy before the source-etls container IP has been added to
-the live policy. Re-run [7c](#7c-update-and-apply-the-network-policy) after the
+the live policy. Re-run [8c](#8c-update-and-apply-the-network-policy) after the
 source-etls containers are running. You may also see an onboarding warning that
 Hermes did not respond to the initial 90 second health probe even though the
 sandbox becomes healthy shortly afterward.
@@ -599,7 +633,7 @@ sandbox agent is allowed to reach. Each preset is a named YAML file in
 `nemoclaw-blueprint/policies/presets/`.
 
 The active preset set for the Hermes NVIDIA path is `slack,outlook,postgres`.
-After step 7c, the live sandbox policy is the resolved `scripts/policy.yaml` file:
+After step 8c, the live sandbox policy is the resolved `scripts/policy.yaml` file:
 it preserves the required NVIDIA compatible-endpoint inference egress and adds the
 resolved source-etls PostgREST endpoint. It should not include
 `github`, `nvidia-forum`, or `nous_research`.
