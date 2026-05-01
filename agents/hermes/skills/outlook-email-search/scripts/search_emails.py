@@ -34,8 +34,8 @@ _WELL_KNOWN_FOLDERS = {
 
 
 def _graph_base() -> str:
-    sidecar = os.environ.get("GRAPH_SIDECAR_URL", "").rstrip("/")
-    return f"{sidecar}/v1.0" if sidecar else "https://graph.microsoft.com/v1.0"
+    sidecar = os.environ.get("GRAPH_SIDECAR_URL", "http://127.0.0.1:8766").rstrip("/")
+    return f"{sidecar}/v1.0"
 
 
 def _mailbox() -> str:
