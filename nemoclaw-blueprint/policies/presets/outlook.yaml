@@ -3,12 +3,16 @@
 
 preset:
   name: outlook
-  description: "Microsoft Outlook and Graph API access"
+  description: "Microsoft Outlook and Graph API access (delegated auth via credential sidecar)"
 
 network_policies:
   outlook:
     name: outlook
     endpoints:
+      # Graph API — accessed by the credential sidecar only.
+      # The bridge communicates with the sidecar over loopback (no policy needed).
+      # login.microsoftonline.com is NOT listed here: OAuth is handled by the
+      # token manager running on the host, outside the sandbox.
       - host: graph.microsoft.com
         port: 443
         protocol: rest
@@ -17,11 +21,24 @@ network_policies:
           - allow: { method: GET, path: "/**" }
           - allow: { method: POST, path: "/**" }
           - allow: { method: PATCH, path: "/**" }
-      - host: login.microsoftonline.com
-        port: 443
-        protocol: rest
+      # Outlook token manager — runs on the Docker host, provides delegated MSAL
+      # tokens. Two entries cover Linux (172.17.0.1, default Docker bridge gateway)
+      # and macOS/Windows Docker Desktop (host.docker.internal).
+      # TOKEN_MANAGER_HOST baked at image build time selects the active address.
+      - host: 172.17.0.1
+        port: 8765
+        protocol: http
         enforcement: enforce
         rules:
-          - allow: { method: POST, path: "/**" }
+          - allow: { method: GET, path: "/token" }
+      - host: host.docker.internal
+        port: 8765
+        protocol: http
+        enforcement: enforce
+        rules:
+          - allow: { method: GET, path: "/token" }
     binaries:
-      - { path: /usr/bin/python3.11 }
+      # PyInstaller-compiled sidecar binary at a distinct path enables OpenShell
+      # binary-path policy enforcement — only the sidecar can reach Graph and
+      # the token manager.
+      - { path: /usr/local/bin/outlook-credential-sidecar }

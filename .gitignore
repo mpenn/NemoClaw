@@ -14,6 +14,9 @@ node_modules/
 desktop.ini
 Thumbs.db
 
+# Temporary workspace
+.tmp/
+
 # Project-specific
 .nemoclaw-maintainer/
 draft_newsletter_*
@@ -46,3 +49,4 @@ secrets.json
 secrets.yaml
 service-account*.json
 token.json
+scripts/policy.yaml

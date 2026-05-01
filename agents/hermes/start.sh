@@ -276,6 +276,7 @@ start_decode_proxy() {
 
 # Forward SIGTERM/SIGINT to child processes for graceful shutdown.
 OUTLOOK_BRIDGE_PID=""
+OUTLOOK_SIDECAR_PID=""
 
 cleanup() {
   echo "[gateway] received signal, forwarding to children..." >&2
@@ -283,9 +284,46 @@ cleanup() {
   kill -TERM "$GATEWAY_PID" 2>/dev/null || true
   [ -n "${SOCAT_PID:-}" ] && kill -TERM "$SOCAT_PID" 2>/dev/null || true
   [ -n "${DECODE_PROXY_PID:-}" ] && kill -TERM "$DECODE_PROXY_PID" 2>/dev/null || true
+  [ -n "${OUTLOOK_SIDECAR_PID:-}" ] && kill -TERM "$OUTLOOK_SIDECAR_PID" 2>/dev/null || true
   [ -n "${OUTLOOK_BRIDGE_PID:-}" ] && kill -TERM "$OUTLOOK_BRIDGE_PID" 2>/dev/null || true
   wait "$GATEWAY_PID" 2>/dev/null || gateway_status=$?
   exit "$gateway_status"
+}
+
+start_outlook_sidecar() {
+  _has_outlook_channel || return 0
+  local sidecar_bin="/usr/local/bin/outlook-credential-sidecar"
+  [ -f "$sidecar_bin" ] || {
+    echo "[outlook-sidecar] binary not found at ${sidecar_bin}, skipping" >&2
+    return 0
+  }
+  # TOKEN_MANAGER_HOST is baked into the image as a Docker ARG/ENV (Phoenix pattern).
+  # The sidecar uses trust_env=True so it inherits HTTP_PROXY=http://10.200.0.1:3128
+  # from this script's exported environment. All requests (Graph API and token manager)
+  # flow through the OpenShell L7 proxy directly, which attributes them to the sidecar
+  # binary path for policy enforcement. No decode-proxy hop needed here.
+  local sidecar_env
+  sidecar_env="SIDECAR_LISTEN_HOST=127.0.0.1 SIDECAR_LISTEN_PORT=8766"
+  if [ "$(id -u)" -eq 0 ]; then
+    # shellcheck disable=SC2086
+    nohup env ${sidecar_env} gosu outlook-proxy "$sidecar_bin" >>/tmp/outlook-sidecar.log 2>&1 &
+  else
+    # shellcheck disable=SC2086
+    nohup env ${sidecar_env} "$sidecar_bin" >>/tmp/outlook-sidecar.log 2>&1 &
+  fi
+  OUTLOOK_SIDECAR_PID=$!
+  echo "[outlook-sidecar] started (pid ${OUTLOOK_SIDECAR_PID})" >&2
+  # Wait for sidecar to be listening before bridge starts
+  local attempts=0
+  while [ "$attempts" -lt 15 ]; do
+    if ss -tln 2>/dev/null | grep -q "127.0.0.1:8766"; then
+      echo "[outlook-sidecar] listening on 127.0.0.1:8766" >&2
+      return 0
+    fi
+    sleep 1
+    attempts=$((attempts + 1))
+  done
+  echo "[outlook-sidecar] WARNING: sidecar may not be ready yet (port 8766 not detected)" >&2
 }
 
 start_outlook_bridge() {
@@ -297,7 +335,19 @@ start_outlook_bridge() {
     return 0
   }
   local bridge_env
-  bridge_env="HERMES_HOME=${HERMES_WRITABLE} HTTPS_PROXY=http://127.0.0.1:${DECODE_PROXY_PORT} HTTP_PROXY=http://127.0.0.1:${DECODE_PROXY_PORT} https_proxy=http://127.0.0.1:${DECODE_PROXY_PORT} http_proxy=http://127.0.0.1:${DECODE_PROXY_PORT}"
+  # GRAPH_SIDECAR_URL routes Graph API calls through the credential sidecar on
+  # loopback (plain HTTP). The sidecar injects the live token and forwards to
+  # graph.microsoft.com over HTTPS via the decode proxy → L7 proxy chain.
+  # HTTPS_PROXY/HTTP_PROXY remain set for any other external HTTP traffic.
+  # NO_PROXY ensures the local Hermes gateway is always reached directly.
+  bridge_env="HERMES_HOME=${HERMES_WRITABLE} \
+    GRAPH_SIDECAR_URL=http://127.0.0.1:8766 \
+    HTTPS_PROXY=http://127.0.0.1:${DECODE_PROXY_PORT} \
+    HTTP_PROXY=http://127.0.0.1:${DECODE_PROXY_PORT} \
+    https_proxy=http://127.0.0.1:${DECODE_PROXY_PORT} \
+    http_proxy=http://127.0.0.1:${DECODE_PROXY_PORT} \
+    NO_PROXY=localhost,127.0.0.1,::1 \
+    no_proxy=localhost,127.0.0.1,::1"
   if [ "$(id -u)" -eq 0 ]; then
     # shellcheck disable=SC2086
     nohup env ${bridge_env} gosu sandbox python3 /usr/local/lib/nemoclaw-bridges/outlook/outlook-bridge.py \
@@ -327,6 +377,7 @@ export no_proxy="$_NO_PROXY_VAL"
 # (e.g., rebuild without env sourced). The L7 proxy rewrites the placeholder at
 # egress; a non-empty value here means "provider is expected to be configured."
 export OUTLOOK_CLIENT_ID="openshell:resolve:env:OUTLOOK_CLIENT_ID"
+export OUTLOOK_SESSION_UUID="openshell:resolve:env:OUTLOOK_SESSION_UUID"
 
 _PROXY_MARKER_BEGIN="# nemoclaw-proxy-config begin"
 _PROXY_MARKER_END="# nemoclaw-proxy-config end"
@@ -413,6 +464,7 @@ if [ "$(id -u)" -ne 0 ]; then
   echo "[nemo-flow] PHOENIX_OPENINFERENCE_ENABLED=${PHOENIX_OPENINFERENCE_ENABLED}" | tee -a /tmp/gateway.log >&2
 
   start_decode_proxy
+  export NEMOCLAW_DECODE_PROXY_DEBUG=1
   HERMES_HOME="${HERMES_WRITABLE}" \
     HTTPS_PROXY="http://127.0.0.1:${DECODE_PROXY_PORT}" \
     HTTP_PROXY="http://127.0.0.1:${DECODE_PROXY_PORT}" \
@@ -431,6 +483,7 @@ if [ "$(id -u)" -ne 0 ]; then
   echo "[gateway] hermes gateway launched (pid $GATEWAY_PID)" >&2
   trap cleanup SIGTERM SIGINT
   start_socat_forwarder
+  start_outlook_sidecar
   start_outlook_bridge
   print_dashboard_urls
 
@@ -480,6 +533,7 @@ harden_hermes_symlinks
 
 # Start the gateway as the 'gateway' user.
 start_decode_proxy
+export NEMOCLAW_DECODE_PROXY_DEBUG=1
 HERMES_HOME="${HERMES_WRITABLE}" \
   HTTPS_PROXY="http://127.0.0.1:${DECODE_PROXY_PORT}" \
   HTTP_PROXY="http://127.0.0.1:${DECODE_PROXY_PORT}" \
@@ -498,6 +552,7 @@ GATEWAY_PID=$!
 echo "[gateway] hermes gateway launched as 'gateway' user (pid $GATEWAY_PID)" >&2
 trap cleanup SIGTERM SIGINT
 start_socat_forwarder
+start_outlook_sidecar
 start_outlook_bridge
 print_dashboard_urls
 

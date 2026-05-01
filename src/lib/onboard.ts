@@ -121,6 +121,29 @@ const ANTHROPIC_ENDPOINT_URL = "https://api.anthropic.com";
 const GEMINI_ENDPOINT_URL = "https://generativelanguage.googleapis.com/v1beta/openai/";
 const BRAVE_SEARCH_HELP_URL = "https://brave.com/search/api/";
 const PHOENIX_COLLECTOR_ENDPOINT_ENV = "PHOENIX_COLLECTOR_ENDPOINT";
+const TOKEN_MANAGER_HOST_ENV = "TOKEN_MANAGER_HOST";
+const TOKEN_MANAGER_PORT_DEFAULT = 8765;
+
+// Returns the address the credential sidecar (inside the container) should use
+// to reach the token manager on the host. On Linux this is the Docker bridge
+// gateway (e.g. 172.17.0.1); on Mac/Windows Docker Desktop, host.docker.internal.
+// If TOKEN_MANAGER_LOCAL_HOST is set to a non-loopback address (remote setup),
+// that same address is used for the container as well.
+function detectContainerHostAddress(): string {
+  const explicit = normalizeCredentialValue(process.env.TOKEN_MANAGER_LOCAL_HOST);
+  if (explicit && explicit !== "localhost" && explicit !== "127.0.0.1") {
+    return explicit;
+  }
+  try {
+    const gateway = runCapture(
+      ["docker", "network", "inspect", "bridge",
+        "--format", "{{range .IPAM.Config}}{{.Gateway}}{{end}}"],
+      { ignoreError: true },
+    ).trim();
+    if (gateway && /^\d+\.\d+\.\d+\.\d+$/.test(gateway)) return gateway;
+  } catch { /* ignore */ }
+  return "host.docker.internal";
+}
 
 const REMOTE_PROVIDER_CONFIG = {
   build: {
@@ -1111,10 +1134,6 @@ async function configurePhoenixCollector(agent) {
   return endpoint || null;
 }
 
-/**
- * Apply an inline Phoenix OTLP egress rule to the running Hermes sandbox.
- * Parses host+port from PHOENIX_COLLECTOR_ENDPOINT and merges into the live policy.
- */
 async function applyPhoenixEgressPolicy(sandboxName) {
   const phoenixEndpoint =
     getCredential(PHOENIX_COLLECTOR_ENDPOINT_ENV) ||
@@ -1161,6 +1180,214 @@ async function applyPhoenixEgressPolicy(sandboxName) {
   try {
     run(policies.buildPolicySetCommand(tmpFile, sandboxName));
     console.log(`  ✓ Phoenix OTLP egress enabled (${phoenixHost}:${phoenixPort})`);
+  } finally {
+    try { fs.unlinkSync(tmpFile); } catch { /* ignored */ }
+    try { fs.rmdirSync(tmpDir); } catch { /* ignored */ }
+  }
+}
+
+/**
+ * Prompt for (or read) the Outlook token manager host, then ensure the
+ * Outlook app is authenticated. If no cached session exists, drives the
+ * device code flow inline: POST /auth/start → display URL+code → poll
+ * /auth/poll until complete. This bootstraps the MSAL cache so the
+ * credential sidecar can acquire tokens immediately on sandbox start.
+ */
+async function configureOutlookTokenManager(agent, hasOutlook: boolean) {
+  if (!agent || agent.name !== "hermes" || !hasOutlook) return null;
+
+  if (isNonInteractive()) {
+    const host = normalizeCredentialValue(process.env[TOKEN_MANAGER_HOST_ENV]);
+    if (host) {
+      saveCredential(TOKEN_MANAGER_HOST_ENV, host);
+      process.env[TOKEN_MANAGER_HOST_ENV] = host;
+    }
+    const resolvedHost = getCredential(TOKEN_MANAGER_HOST_ENV) || process.env[TOKEN_MANAGER_HOST_ENV] || "host.docker.internal";
+    const localHost = normalizeCredentialValue(process.env.TOKEN_MANAGER_LOCAL_HOST) || "localhost";
+    const tmBase = `http://${localHost}:${TOKEN_MANAGER_PORT_DEFAULT}`;
+    const envSessionId = normalizeCredentialValue(process.env.OUTLOOK_SESSION_UUID);
+    if (envSessionId) saveCredential("OUTLOOK_SESSION_UUID", envSessionId);
+    const savedSessionId = getCredential("OUTLOOK_SESSION_UUID") || envSessionId;
+    if (!savedSessionId) {
+      console.error("  ✗ Outlook: no session UUID found — set OUTLOOK_SESSION_UUID env var or run nemoclaw onboard (interactive) to authenticate.");
+      process.exit(1);
+    }
+    const sessionCheck = runCurlProbe([
+      "-sf", "--max-time", "10",
+      "-H", `X-Session-Id: ${savedSessionId}`,
+      `${tmBase}/token`,
+    ]);
+    if (!sessionCheck.ok) {
+      console.error("  ✗ Outlook: session is not valid (token manager unreachable or session expired).");
+      console.error("    Check token manager logs, then re-run nemoclaw onboard (interactive) to re-authenticate.");
+      process.exit(1);
+    }
+    console.log("  ✓ Outlook session active");
+    return resolvedHost;
+  }
+
+  const saved = getCredential(TOKEN_MANAGER_HOST_ENV) || normalizeCredentialValue(process.env[TOKEN_MANAGER_HOST_ENV]);
+  // "localhost" was the stale pre-fix default — it refers to the container
+  // itself, not the host. Auto-detect the correct container-facing address.
+  const existing = (saved && saved !== "localhost" && saved !== "127.0.0.1")
+    ? saved
+    : detectContainerHostAddress();
+  const answer = await prompt(
+    `  Outlook token manager host [${existing}]: `,
+  );
+  const host = answer.trim() || existing;
+  saveCredential(TOKEN_MANAGER_HOST_ENV, host);
+  process.env[TOKEN_MANAGER_HOST_ENV] = host;
+  console.log(`  ✓ Outlook token manager host: ${host}`);
+
+  const clientId =
+    getCredential("OUTLOOK_CLIENT_ID") || process.env.OUTLOOK_CLIENT_ID || "";
+  const tenantId =
+    getCredential("OUTLOOK_TENANT_ID") || process.env.OUTLOOK_TENANT_ID || "";
+  // Onboarding always runs on the host machine, so use localhost to reach
+  // the token manager regardless of TOKEN_MANAGER_HOST (which is the
+  // container-facing address baked into the sandbox image).
+  // Override via TOKEN_MANAGER_LOCAL_HOST env var for remote setups.
+  const localHost = normalizeCredentialValue(process.env.TOKEN_MANAGER_LOCAL_HOST) || "localhost";
+  const tmBase = `http://${localHost}:${TOKEN_MANAGER_PORT_DEFAULT}`;
+
+  // One-time migration: remove legacy UPPERCASE provider name from gateway if present.
+  if (providerExistsInGateway("OUTLOOK_SESSION_UUID")) {
+    runOpenshell(["provider", "delete", "OUTLOOK_SESSION_UUID"], { ignoreError: true });
+  }
+
+  // Shortcut: if a session UUID is already stored, try it first.
+  const savedSessionId = getCredential("OUTLOOK_SESSION_UUID");
+  if (savedSessionId) {
+    const sessionCheck = runCurlProbe([
+      "-sf", "--max-time", "5",
+      "-H", `X-Session-Id: ${savedSessionId}`,
+      `${tmBase}/token`,
+    ]);
+    if (sessionCheck.ok) {
+      saveCredential("OUTLOOK_SESSION_UUID", savedSessionId);
+      console.log("  ✓ Outlook session active");
+      return host;
+    }
+    // Session gone (token manager restarted without cache) — fall through to re-auth.
+  }
+
+  // No live session — drive the auth flow (browser by default, device code as fallback).
+  console.log("\n  Outlook authentication required");
+
+  const loginHint = getCredential("OUTLOOK_TARGET_MAILBOX") || process.env.OUTLOOK_TARGET_MAILBOX || "";
+  const startBody = JSON.stringify({
+    client_id: clientId,
+    tenant_id: tenantId,
+    type: "browser",
+    login_hint: loginHint,
+  });
+  const startResult = runCurlProbe([
+    "--fail-with-body", "-s",
+    "--max-time", "15",
+    "-X", "POST",
+    "-H", "Content-Type: application/json",
+    "-d", startBody,
+    `${tmBase}/auth/start`,
+  ]);
+
+  let startData: { session_id?: string; type?: string; url?: string; auth_uri?: string; user_code?: string; error?: string; status?: string } = {};
+  try { startData = JSON.parse(startResult.body); } catch { /* ignore */ }
+
+  // Token manager returned an existing authenticated session (deduplication).
+  if (startData.status === "already_authenticated" && startData.session_id) {
+    saveCredential("OUTLOOK_SESSION_UUID", startData.session_id);
+    console.log("  ✓ Outlook session active");
+    return host;
+  }
+
+  if (!startResult.ok) {
+    throw new Error(
+      `Outlook authentication required but token manager is unreachable at ${tmBase}.\n` +
+      `  Start the token manager and re-run onboard.`
+    );
+  }
+
+  const sessionId = startData.session_id;
+  if (!sessionId) {
+    throw new Error("Token manager /auth/start returned no session_id — re-run onboard to retry.");
+  }
+
+  if (startData.type === "browser" && startData.auth_uri) {
+    console.log(`\n  Open this URL in your browser to authenticate:\n\n    ${startData.auth_uri}\n`);
+    console.log("  Note: port 51247 must be forwarded from your local machine to this host.");
+    console.log("  In VS Code: Ports tab → Forward a Port → 51247\n");
+  } else if (startData.url && startData.user_code) {
+    console.log(`\n  To sign in, open a browser and go to:\n    ${startData.url}`);
+    console.log(`  Enter code: ${startData.user_code}\n`);
+  } else {
+    throw new Error("Unexpected response from token manager /auth/start — re-run onboard to retry.");
+  }
+
+  // Poll /auth/poll?session_id=X until authenticated (up to 5 minutes).
+  const pollUrl = `${tmBase}/auth/poll?session_id=${encodeURIComponent(sessionId)}`;
+  const deadline = Date.now() + 5 * 60 * 1000;
+  process.stdout.write("  Waiting for authentication");
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 5000));
+    process.stdout.write(".");
+    const pollResult = runCurlProbe(["--fail-with-body", "-s", "--max-time", "10", pollUrl]);
+    let pollData: { status?: string } = {};
+    try { pollData = JSON.parse(pollResult.body); } catch { /* ignore */ }
+    if (pollData.status === "complete") {
+      process.stdout.write("\n");
+      saveCredential("OUTLOOK_SESSION_UUID", sessionId);
+      console.log("  ✓ Outlook authentication complete");
+      return host;
+    }
+    if (pollData.status === "error" || pollData.status === "expired") {
+      process.stdout.write("\n");
+      throw new Error(`Outlook auth failed: ${pollData.status} — re-run onboard to retry.`);
+    }
+  }
+  process.stdout.write("\n");
+  throw new Error("Outlook auth timed out — re-run onboard to retry.");
+}
+
+/**
+ * Apply a dynamic egress policy rule so the credential sidecar can reach
+ * the Outlook token manager on the host. Mirrors applyPhoenixEgressPolicy.
+ */
+async function applyOutlookTokenManagerEgressPolicy(sandboxName) {
+  const tokenManagerHost =
+    getCredential(TOKEN_MANAGER_HOST_ENV) || process.env[TOKEN_MANAGER_HOST_ENV];
+  if (!tokenManagerHost) return;
+
+  const presetEntries = [
+    "  outlook_token_manager:",
+    "    name: outlook_token_manager",
+    "    endpoints:",
+    `      - host: ${tokenManagerHost}`,
+    `        port: ${TOKEN_MANAGER_PORT_DEFAULT}`,
+    "        protocol: rest",
+    "        enforcement: enforce",
+    "        rules:",
+    '          - allow: { method: GET, path: "/token" }',
+    '          - allow: { method: GET, path: "/health" }',
+    "    binaries:",
+    "      - { path: /usr/local/bin/outlook-credential-sidecar }",
+  ].join("\n");
+
+  let rawPolicy = "";
+  try {
+    rawPolicy = runCapture(policies.buildPolicyGetCommand(sandboxName), { ignoreError: true });
+  } catch {
+    /* use empty baseline */
+  }
+  const currentPolicy = policies.parseCurrentPolicy(rawPolicy);
+  const merged = policies.mergePresetIntoPolicy(currentPolicy, presetEntries);
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-policy-"));
+  const tmpFile = path.join(tmpDir, "policy.yaml");
+  fs.writeFileSync(tmpFile, merged, { encoding: "utf-8", mode: 0o600 });
+  try {
+    run(policies.buildPolicySetCommand(tmpFile, sandboxName));
+    console.log(`  ✓ Outlook token manager egress enabled (${tokenManagerHost}:${TOKEN_MANAGER_PORT_DEFAULT})`);
   } finally {
     try { fs.unlinkSync(tmpFile); } catch { /* ignored */ }
     try { fs.rmdirSync(tmpDir); } catch { /* ignored */ }
@@ -1307,6 +1534,21 @@ function patchStagedDockerfile(
     dockerfile = dockerfile.replace(
       /^ARG NEMOCLAW_MESSAGING_ALLOWED_IDS_B64=.*$/m,
       `ARG NEMOCLAW_MESSAGING_ALLOWED_IDS_B64=${encodeDockerJsonArg(messagingAllowedIds)}`,
+    );
+  }
+  const sourceEtlBuildArgs = [
+    "SOURCE_ETL_GITHUB_REPO",
+    "SOURCE_ETL_FORUM_TAG",
+    "SOURCE_ETL_API_URL",
+    "SOURCE_ETL_API_HOST",
+    "SOURCE_ETL_API_PORT",
+  ];
+  for (const envName of sourceEtlBuildArgs) {
+    const envValue = process.env[envName];
+    if (!envValue) continue;
+    dockerfile = dockerfile.replace(
+      new RegExp(`^ARG ${envName}=.*$`, "m"),
+      `ARG ${envName}=${envValue}`,
     );
   }
   if (Object.keys(discordGuilds).length > 0) {
@@ -2941,14 +3183,9 @@ async function createSandbox(
           MESSAGING_CHANNELS.filter((c) => enabledChannels.includes(c.name)).flatMap((c) => {
             const keys = [c.envKey];
             if (c.appTokenEnvKey) keys.push(c.appTokenEnvKey);
-            if (c.name === "outlook")
-              keys.push(
-                "OUTLOOK_CLIENT_SECRET",
-                "OUTLOOK_TENANT_ID",
-                "OUTLOOK_BOT_MAILBOX",
-                "OUTLOOK_USER_MAILBOX",
-                "OUTLOOK_BASIC_AUTH",
-              );
+            // Outlook secondary provider credential (TENANT_ID rewritten in
+            // X-Tenant-ID headers by the L7 proxy when the sidecar calls /token).
+            if (c.name === "outlook") keys.push("OUTLOOK_TENANT_ID");
             return keys;
           }),
         )
@@ -2975,6 +3212,11 @@ async function createSandbox(
       envKey: "TELEGRAM_BOT_TOKEN",
       token: getMessagingToken("TELEGRAM_BOT_TOKEN"),
     },
+    // Outlook: CLIENT_ID and TENANT_ID go into the provider store so that
+    // openshell:resolve:env:OUTLOOK_CLIENT_ID / OUTLOOK_TENANT_ID are rewritten
+    // by the L7 proxy in the X-Client-ID / X-Tenant-ID headers of the sidecar's
+    // /token requests. No CLIENT_SECRET or BASIC_AUTH — delegated auth.
+    // OUTLOOK_SESSION_UUID is attached separately after this list (see below).
     {
       name: `${sandboxName}-outlook-bridge`,
       envKey: "OUTLOOK_CLIENT_ID",
@@ -2982,42 +3224,10 @@ async function createSandbox(
     },
     {
       name: `${sandboxName}-outlook-bridge`,
-      envKey: "OUTLOOK_CLIENT_SECRET",
-      token: getMessagingToken("OUTLOOK_CLIENT_SECRET"),
-    },
-    {
-      name: `${sandboxName}-outlook-bridge`,
       envKey: "OUTLOOK_TENANT_ID",
       token: getMessagingToken("OUTLOOK_TENANT_ID"),
     },
-    {
-      name: `${sandboxName}-outlook-bridge`,
-      envKey: "OUTLOOK_BOT_MAILBOX",
-      token: getMessagingToken("OUTLOOK_BOT_MAILBOX"),
-    },
-    {
-      name: `${sandboxName}-outlook-bridge`,
-      envKey: "OUTLOOK_USER_MAILBOX",
-      token: getMessagingToken("OUTLOOK_USER_MAILBOX"),
-    },
-    {
-      name: `${sandboxName}-outlook-bridge`,
-      envKey: "OUTLOOK_BASIC_AUTH",
-      token: getMessagingToken("OUTLOOK_BASIC_AUTH"),
-    },
   ].filter(({ envKey }) => !enabledEnvKeys || enabledEnvKeys.has(envKey));
-
-  // Derive OUTLOOK_BASIC_AUTH from CLIENT_ID + CLIENT_SECRET when both are present
-  // but BASIC_AUTH is absent. Handles non-interactive rebuilds where configureMessaging
-  // was skipped — as long as the user sourced their .env, BASIC_AUTH flows through.
-  const _outlookBasicAuthEntry = messagingTokenDefs.find((d) => d.envKey === "OUTLOOK_BASIC_AUTH");
-  if (_outlookBasicAuthEntry && !_outlookBasicAuthEntry.token) {
-    const _clientId = messagingTokenDefs.find((d) => d.envKey === "OUTLOOK_CLIENT_ID")?.token;
-    const _clientSecret = messagingTokenDefs.find((d) => d.envKey === "OUTLOOK_CLIENT_SECRET")?.token;
-    if (_clientId && _clientSecret) {
-      _outlookBasicAuthEntry.token = Buffer.from(`${_clientId}:${_clientSecret}`).toString("base64");
-    }
-  }
 
   if (webSearchConfig) {
     messagingTokenDefs.push({
@@ -3199,21 +3409,40 @@ async function createSandbox(
     const agentBuild = agentOnboard.createAgentSandbox(agent);
     buildCtx = agentBuild.buildCtx;
     stagedDockerfile = agentBuild.stagedDockerfile;
-    // Bake the Phoenix OTLP endpoint into the Hermes image so start.sh reads it
-    // directly from Docker ENV — more reliable than runtime env injection alone.
+    // Bake Phoenix and Outlook token manager host into the Hermes image so
+    // start.sh reads them directly from Docker ENV (Phoenix pattern).
     if (agent.name === "hermes") {
+      let dfContent = fs.readFileSync(stagedDockerfile, "utf8");
+      let dfDirty = false;
       const phoenixEndpoint =
         getCredential(PHOENIX_COLLECTOR_ENDPOINT_ENV) ||
         process.env[PHOENIX_COLLECTOR_ENDPOINT_ENV];
       if (phoenixEndpoint) {
-        const dfContent = fs.readFileSync(stagedDockerfile, "utf8");
-        fs.writeFileSync(
-          stagedDockerfile,
-          dfContent.replace(
-            /^ARG PHOENIX_COLLECTOR_ENDPOINT=.*$/m,
-            `ARG PHOENIX_COLLECTOR_ENDPOINT=${phoenixEndpoint}`,
-          ),
+        dfContent = dfContent.replace(
+          /^ARG PHOENIX_COLLECTOR_ENDPOINT=.*$/m,
+          `ARG PHOENIX_COLLECTOR_ENDPOINT=${phoenixEndpoint}`,
         );
+        // Switch BASE_IMAGE to the NeMo-Flow variant so nemo_flow is importable
+        // inside the sandbox. start.sh gates all telemetry on `import nemo_flow`
+        // succeeding — without this the endpoint is baked in but traces never flow.
+        dfContent = dfContent.replace(
+          /^(ARG BASE_IMAGE=ghcr\.io\/nvidia\/nemoclaw\/hermes-sandbox-base):latest$/m,
+          `$1-nemo-flow:latest`,
+        );
+        dfDirty = true;
+      }
+      const tokenManagerHost =
+        getCredential(TOKEN_MANAGER_HOST_ENV) ||
+        process.env[TOKEN_MANAGER_HOST_ENV];
+      if (tokenManagerHost) {
+        dfContent = dfContent.replace(
+          /^ARG TOKEN_MANAGER_HOST=.*$/m,
+          `ARG TOKEN_MANAGER_HOST=${tokenManagerHost}`,
+        );
+        dfDirty = true;
+      }
+      if (dfDirty) {
+        fs.writeFileSync(stagedDockerfile, dfContent);
       }
     }
   } else {
@@ -3262,6 +3491,15 @@ async function createSandbox(
     createArgs.push("--provider", p);
   }
 
+  // Register and attach the Outlook session UUID provider. This happens here
+  // (not in configureOutlookTokenManager) because sandboxName is not yet known
+  // during step 5 when token manager auth runs.
+  const savedOutlookSessionId = getCredential("OUTLOOK_SESSION_UUID") || normalizeCredentialValue(process.env.OUTLOOK_SESSION_UUID);
+  if (savedOutlookSessionId) {
+    upsertProvider(`${sandboxName}-outlook-session`, "generic", "OUTLOOK_SESSION_UUID", null, { "OUTLOOK_SESSION_UUID": savedOutlookSessionId });
+    createArgs.push("--provider", `${sandboxName}-outlook-session`);
+  }
+
   // Create a GitHub provider when a token is available. OpenShell's native
   // "github" provider type injects GITHUB_TOKEN/GH_TOKEN as a placeholder so
   // that gh, git, and curl commands inside the sandbox can authenticate to
@@ -3294,15 +3532,8 @@ async function createSandbox(
             return tokensByEnvKey["SLACK_BOT_TOKEN"] ? "slack" : null;
           if (envKey === "TELEGRAM_BOT_TOKEN") return "telegram";
           if (envKey === "OUTLOOK_CLIENT_ID") return "outlook";
-          // Outlook secondary credentials — deduplicated via Set; client ID is primary.
-          if (
-            envKey === "OUTLOOK_CLIENT_SECRET" ||
-            envKey === "OUTLOOK_TENANT_ID" ||
-            envKey === "OUTLOOK_BOT_MAILBOX" ||
-            envKey === "OUTLOOK_USER_MAILBOX" ||
-            envKey === "OUTLOOK_BASIC_AUTH"
-          )
-            return null;
+          // OUTLOOK_TENANT_ID is a secondary provider credential — CLIENT_ID is primary.
+          if (envKey === "OUTLOOK_TENANT_ID") return null;
           return null;
         })
         .filter(Boolean),
@@ -3442,6 +3673,44 @@ async function createSandbox(
     if (phoenixEndpoint) {
       envArgs.push(formatEnvAssignment(PHOENIX_COLLECTOR_ENDPOINT_ENV, phoenixEndpoint));
     }
+
+    // TOKEN_MANAGER_HOST: baked into the image (Phoenix pattern) AND passed at
+    // runtime so a re-run without image rebuild still picks up the latest value.
+    const tokenManagerHost =
+      getCredential(TOKEN_MANAGER_HOST_ENV) || process.env[TOKEN_MANAGER_HOST_ENV];
+    if (tokenManagerHost) {
+      envArgs.push(formatEnvAssignment(TOKEN_MANAGER_HOST_ENV, tokenManagerHost));
+    }
+    // OUTLOOK_TARGET_MAILBOX, OUTLOOK_REPLY_TO, and OUTLOOK_ALLOWED_SENDERS are
+    // plain env vars (not provider credentials) — the bridge reads them directly.
+    const outlookTargetMailbox =
+      getCredential("OUTLOOK_TARGET_MAILBOX") || process.env.OUTLOOK_TARGET_MAILBOX;
+    if (outlookTargetMailbox) {
+      envArgs.push(formatEnvAssignment("OUTLOOK_TARGET_MAILBOX", outlookTargetMailbox));
+    }
+    const outlookReplyTo =
+      getCredential("OUTLOOK_REPLY_TO") || process.env.OUTLOOK_REPLY_TO;
+    if (outlookReplyTo) {
+      envArgs.push(formatEnvAssignment("OUTLOOK_REPLY_TO", outlookReplyTo));
+    }
+    const outlookAllowedSenders =
+      getCredential("OUTLOOK_ALLOWED_SENDERS") || process.env.OUTLOOK_ALLOWED_SENDERS;
+    if (outlookAllowedSenders) {
+      envArgs.push(formatEnvAssignment("OUTLOOK_ALLOWED_SENDERS", outlookAllowedSenders));
+    }
+
+    for (const envKey of [
+      "SOURCE_ETL_GITHUB_REPO",
+      "SOURCE_ETL_FORUM_TAG",
+      "SOURCE_ETL_API_URL",
+      "SOURCE_ETL_API_HOST",
+      "SOURCE_ETL_API_PORT",
+    ]) {
+      const value = getCredential(envKey) || process.env[envKey];
+      if (value) {
+        envArgs.push(formatEnvAssignment(envKey, value));
+      }
+    }
   }
   // Pass GATEWAY_ALLOW_ALL_USERS into the sandbox at runtime when the host
   // has it set. This controls whether Hermes accepts messages from any user
@@ -3451,6 +3720,14 @@ async function createSandbox(
   if (process.env.GATEWAY_ALLOW_ALL_USERS) {
     envArgs.push(
       formatEnvAssignment("GATEWAY_ALLOW_ALL_USERS", process.env.GATEWAY_ALLOW_ALL_USERS),
+    );
+  }
+  if (process.env.NEMOCLAW_DECODE_PROXY_DEBUG) {
+    envArgs.push(
+      formatEnvAssignment(
+        "NEMOCLAW_DECODE_PROXY_DEBUG",
+        process.env.NEMOCLAW_DECODE_PROXY_DEBUG,
+      ),
     );
   }
   const sandboxEnv = buildSubprocessEnv();
@@ -4550,17 +4827,13 @@ const MESSAGING_CHANNELS = [
   {
     name: "outlook",
     envKey: "OUTLOOK_CLIENT_ID",
-    // Channels with multiple required credentials list them here.
-    // isChannelFullyConfigured checks all keys before suggesting the network policy preset.
-    // Single-credential channels omit this and fall back to checking envKey alone.
+    // Delegated auth: only CLIENT_ID and TENANT_ID are required.
+    // CLIENT_SECRET is no longer used (device code flow via token manager on host).
     requiredEnvKeys: [
       "OUTLOOK_CLIENT_ID",
       "OUTLOOK_TENANT_ID",
-      "OUTLOOK_CLIENT_SECRET",
-      "OUTLOOK_BOT_MAILBOX",
-      "OUTLOOK_USER_MAILBOX",
     ],
-    description: "Microsoft Outlook email bridge (sidecar)",
+    description: "Microsoft Outlook email bridge (delegated auth via token manager)",
     help: "Azure portal → App registrations → your app → Overview. Copy Application (client) ID.",
     label: "Outlook Client ID",
   },
@@ -4766,13 +5039,14 @@ async function setupMessagingChannels() {
         }
       }
     }
-    // Outlook-specific: prompt for the three additional credentials and allowed senders
+    // Outlook: delegated auth — collect TENANT_ID (provider credential) plus
+    // optional TARGET_MAILBOX and ALLOWED_SENDERS (real env vars for the bridge).
     if (ch.name === "outlook") {
       for (const [envKey, label, isSecret] of [
-        ["OUTLOOK_TENANT_ID",    "Outlook Tenant ID (Directory/tenant ID from Azure portal)", true],
-        ["OUTLOOK_CLIENT_SECRET", "Outlook Client Secret",                                    true],
-        ["OUTLOOK_BOT_MAILBOX",   "Bot shared mailbox address (e.g. mybot@example.onmicrosoft.com)", false],
-        ["OUTLOOK_USER_MAILBOX",  "Your personal mailbox address (reply recipient)",           false],
+        ["OUTLOOK_TENANT_ID",       "Outlook Tenant ID (Directory/tenant ID from Azure portal)", true],
+        ["OUTLOOK_TARGET_MAILBOX",  "Bot mailbox UPN to poll (leave blank to use authenticated account's inbox)", false],
+        ["OUTLOOK_REPLY_TO",        "Personal address to send job results to (leave blank to use bot mailbox)", false],
+        ["OUTLOOK_ALLOWED_SENDERS", "Allowed senders (comma-separated emails, leave blank to allow any)", false],
       ] as [string, string, boolean][]) {
         const existing = getMessagingToken(envKey);
         if (existing) {
@@ -4787,16 +5061,6 @@ async function setupMessagingChannels() {
             console.log(`  ✓ outlook ${envKey} saved`);
           }
         }
-      }
-      // Always recompute OUTLOOK_BASIC_AUTH = base64(client_id:client_secret) so
-      // rotating either component credential is reflected immediately.
-      const clientId = process.env.OUTLOOK_CLIENT_ID || getMessagingToken("OUTLOOK_CLIENT_ID") || "";
-      const clientSecret =
-        process.env.OUTLOOK_CLIENT_SECRET || getMessagingToken("OUTLOOK_CLIENT_SECRET") || "";
-      if (clientId && clientSecret) {
-        const basicAuth = Buffer.from(`${clientId}:${clientSecret}`).toString("base64");
-        saveCredential("OUTLOOK_BASIC_AUTH", basicAuth);
-        process.env.OUTLOOK_BASIC_AUTH = basicAuth;
       }
     }
   }
@@ -6186,6 +6450,10 @@ async function onboard(opts = {}) {
         return current;
       });
       await configurePhoenixCollector(agent);
+      await configureOutlookTokenManager(
+        agent,
+        selectedMessagingChannels.includes("outlook"),
+      );
       sandboxName = await createSandbox(
         gpu,
         model,
@@ -6293,11 +6561,19 @@ async function onboard(opts = {}) {
       }
     }
 
+
     // Apply Phoenix OTLP egress rule after policies are locked in.
     // Only for Hermes (NeMo-Flow telemetry) and only in enforced mode.
     if (agent?.name === "hermes" && !dangerouslySkipPermissions) {
       await applyPhoenixEgressPolicy(sandboxName);
+      if (selectedMessagingChannels.includes("outlook")) {
+        await applyOutlookTokenManagerEgressPolicy(sandboxName);
+      }
     }
+
+    // Source ETL policy depends on post-onboard Docker IPs. Apply it explicitly
+    // with scripts/update-policy.sh followed by openshell policy set.
+
 
     onboardSession.completeSession({ sandboxName, provider, model });
     completed = true;

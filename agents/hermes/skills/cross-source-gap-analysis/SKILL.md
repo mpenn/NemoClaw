@@ -19,8 +19,9 @@ multiple sources rather than merely access one source.
 Load the source skills you need first:
 
 - `slack-channel-summarizer`
-- `github-interactions`
-- `nvidia-forum-search`
+- `slack-channel-finder`
+- `source-etl-query`
+- `outlook-email-search`
 
 This skill does not define how to access those systems. It defines how to
 combine the findings once you have them.
@@ -32,8 +33,8 @@ combine the findings once you have them.
 Prefer a small, relevant slice from each source over broad collection. For example:
 
 - a recent Slack window for the relevant channel
-- the current GitHub issues or PRs for the repo or feature area
-- one or two targeted NVIDIA forum searches
+- mirrored GitHub issues, PRs, or discussions for the repo or feature area
+- mirrored NVIDIA forum topics for the `nemoclaw` tag scope
 
 ### 2. Normalize what each source is saying
 
@@ -52,7 +53,7 @@ Look for:
 - topics active in one source but absent in another
 - issues discussed informally in Slack but not tracked in GitHub
 - GitHub work that appears to have little or no discussion in Slack
-- repeated forum concerns that are not reflected in Slack or GitHub
+- repeated mirrored forum concerns that are not reflected in Slack or GitHub
 - conflicting descriptions of status, priority, or ownership
 
 ### 4. Present the result
@@ -73,3 +74,4 @@ Do not invent gaps just because one source had less data available.
   or a plain summary.
 - Do not over-collect. A narrow comparison is usually better than an exhaustive scrape.
 - Distinguish between "not discussed" and "not observed in the sampled data".
+- Distinguish between “not observed in the mirror” and “not present on the live source”.

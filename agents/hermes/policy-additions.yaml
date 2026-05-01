@@ -4,8 +4,7 @@
 # Sandbox policy for the Hermes Agent.
 # Based on the OpenClaw policy with agent-specific adjustments:
 #   - .hermes / .hermes-data instead of .openclaw / .openclaw-data
-#   - Nous Research phone-home endpoints instead of OpenClaw/ClawHub
-#   - PyPI instead of npm registry
+#   - NVIDIA compatible-endpoint inference only by default
 #   - /usr/local/bin/hermes and python3 binary restrictions
 #
 # Principle: deny by default, allow only what's needed for core functionality.
@@ -64,37 +63,5 @@ network_policies:
           - allow: { method: GET, path: "/v1/models/**" }
     binaries:
       - { path: /usr/local/bin/claude }
-      - { path: /usr/local/bin/hermes }
-      - { path: /usr/bin/python3.11 }
-
-  # ── Nous Research — Hermes auth, updates, portal ──────────────
-  nous_research:
-    name: nous_research
-    endpoints:
-      - host: nousresearch.com
-        port: 443
-        protocol: rest
-        enforcement: enforce
-        tls: terminate
-        rules:
-          - allow: { method: GET, path: "/**" }
-          - allow: { method: POST, path: "/**" }
-      - host: hermes-agent.nousresearch.com
-        port: 443
-        protocol: rest
-        enforcement: enforce
-        tls: terminate
-        rules:
-          - allow: { method: GET, path: "/**" }
-          - allow: { method: POST, path: "/**" }
-      - host: api.nousresearch.com
-        port: 443
-        protocol: rest
-        enforcement: enforce
-        tls: terminate
-        rules:
-          - allow: { method: GET, path: "/**" }
-          - allow: { method: POST, path: "/**" }
-    binaries:
       - { path: /usr/local/bin/hermes }
       - { path: /usr/bin/python3.11 }

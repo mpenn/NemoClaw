@@ -90,12 +90,6 @@ inference:
   model_config_key: "model.default"
   proxy_support: implicit  # via httpx (OpenAI SDK dep)
 
-# ── Phone-home hosts ───────────────────────────────────────────
-# Agent-specific egress endpoints needed for updates, auth, etc.
-phone_home_hosts:
-  - nousresearch.com
-  - hermes-agent.nousresearch.com
-
 # ── Package registry ───────────────────────────────────────────
 # Hermes uses pip for plugin/skill installs (replaces npm for OpenClaw).
 package_registry:
