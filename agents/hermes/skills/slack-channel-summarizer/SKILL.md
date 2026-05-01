@@ -1,84 +1,78 @@
 ---
 name: slack-channel-summarizer
-description: Read and summarize Slack channel history from inside the NemoClaw sandbox.
+description: Resolve Slack channels and read enough history and threads to answer questions from Slack evidence.
 ---
 
 # slack-channel-summarizer
 
-Use this skill to resolve a Slack channel and read its history.
+Use this skill when the answer depends on Slack channel history. If the user
+asks about a topic but does not name a channel, use `slack-channel-finder`
+first, then read the most likely channels.
 
-## When to use
+## Access
 
-- Summarize recent activity in a channel
-- Review conversation history for a time range
-- Check what was discussed in a channel before answering a question
+- Token: `openshell:resolve:env:SLACK_BOT_TOKEN`.
+- The bot can read only channels it can access.
+- Resolver script:
+  `/sandbox/.hermes-data/skills/slack-channel-summarizer/scripts/resolve_slack_channel.py`
 
-## Access model
+## Resolve
 
-- The bot token is available as `openshell:resolve:env:SLACK_BOT_TOKEN`.
-- Slack Web API access is allowed from the sandbox.
-- The bot must be invited to a channel before it can read its history.
-
-## Procedure
-
-### 1. Resolve the channel ID
-
-If the user gives a direct Slack mention like `<#C0ALN454EH4>`, use that ID
-directly.
-
-If the user gives only a channel name, use the bundled resolver script:
+Direct Slack mentions like `<#C0ALN454EH4>` already contain the channel ID.
+For names or URLs, use:
 
 ```bash
-python3 /sandbox/.hermes-data/skills/slack-channel-summarizer/scripts/resolve_slack_channel.py --name 'CHANNEL_NAME'
+python3 /sandbox/.hermes-data/skills/slack-channel-summarizer/scripts/resolve_slack_channel.py --input 'CHANNEL'
 ```
 
-Interpret the result this way:
+If private discovery scope is missing, ask for a direct channel mention or URL.
+Do not claim Slack itself is unavailable unless the API call actually fails.
 
-- `ok: true`
-  Use the returned `channel_id`.
-- `missing_private_discovery_scope`
-  Public lookup did not find the channel and private discovery by name is not
-  available with this token. Ask the user for a direct Slack channel mention or
-  a Slack channel URL.
-- `channel_not_found`
-  The channel could not be found through the allowed lookup path.
+## Research Approach
 
-### 2. Read channel history
+- Read broadly enough to answer the question, not just the newest message.
+- Use `limit=50` for ordinary research and `limit=100` for busy or weekly
+  windows.
+- Add `oldest=` and `latest=` when the user gives a time range.
+- Fetch `conversations.replies` when a message has replies and appears relevant.
+- For topic research, broaden across likely channels, terms, and time windows
+  before concluding that Slack has little evidence.
+- Ignore bot noise, joins/leaves, and duplicate notifications unless they are
+  directly relevant.
 
-Use `conversations.history` with the resolved channel ID:
+## Read
 
 ```bash
-curl -s "https://api.slack.com/api/conversations.history?channel=CHANNEL_ID&limit=15" \
+curl -s "https://slack.com/api/conversations.history?channel=CHANNEL_ID&limit=50" \
   -H "Authorization: Bearer openshell:resolve:env:SLACK_BOT_TOKEN"
 ```
 
-If needed, add `oldest=` and `latest=` to constrain the time range.
+Relevant thread:
 
-Interpret common failures explicitly:
+```bash
+curl -s "https://slack.com/api/conversations.replies?channel=CHANNEL_ID&ts=THREAD_TS&limit=100" \
+  -H "Authorization: Bearer openshell:resolve:env:SLACK_BOT_TOKEN"
+```
 
-- `not_in_channel`
-  The bot is not a member of that channel.
-- `missing_scope` with `needed=channels:history`
-  The bot cannot read public-channel history.
-- `missing_scope` with `needed=groups:history`
-  The bot cannot read private-channel history.
-- `channel_not_found`
-  The ID is wrong or unavailable to the token.
+Common failures:
 
-### 3. Summarize
+- `not_in_channel`: the bot is not a member.
+- `missing_scope` with `channels:history`: cannot read public history.
+- `missing_scope` with `groups:history`: cannot read private history.
+- `channel_not_found`: wrong ID or unavailable to the token.
 
-Summarize only what the user asked for. Good defaults are:
+## Answer
 
-- time range covered
-- main topics
-- active participants
-- decisions or action items
+- Answer directly in plain text.
+- Back important claims with specific evidence: channel, date/time, thread, user
+  name, or short message phrase when useful.
+- Do not dump raw message counts, participant lists, or scope unless it affects
+  confidence or the user asks.
+- Do not force a fixed summary format. Use normal sentences and only the light
+  structure needed for readability.
 
 ## Pitfalls
 
 - Do not use `session_search` to discover Slack channel IDs.
-- Do not start discovery with `users.conversations?types=public_channel,private_channel`.
-- Do not say Slack access is unavailable just because `groups:read` is missing.
-  That only blocks private-channel discovery by name.
-- If the channel ID is already known, skip discovery and go straight to
-  `conversations.history`.
+- Do not start channel discovery with `users.conversations`.
+- If the channel ID is already known, skip discovery and read history directly.

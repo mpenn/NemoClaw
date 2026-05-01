@@ -61,6 +61,7 @@ _HOP_BY_HOP = frozenset([
 ])
 
 _live_token: str | None = None
+_token_refresh_lock = asyncio.Lock()
 
 
 # ── Token management ──────────────────────────────────────────────────────────
@@ -91,6 +92,18 @@ async def fetch_token() -> str:
             return data["access_token"]
 
 
+async def refresh_token(reason: str) -> bool:
+    global _live_token
+    async with _token_refresh_lock:
+        try:
+            _live_token = await fetch_token()
+            log.info("Token refreshed (%s, len=%d)", reason, len(_live_token))
+            return True
+        except Exception as exc:
+            log.error("Token refresh failed (%s): %s", reason, exc)
+            return False
+
+
 async def initial_token_loop() -> None:
     """Keep retrying the initial token fetch until it succeeds.
 
@@ -102,17 +115,15 @@ async def initial_token_loop() -> None:
     attempt = 0
     while _live_token is None:
         attempt += 1
-        try:
-            _live_token = await fetch_token()
-            log.info("Initial token acquired (len=%d) after %d attempt(s)", len(_live_token), attempt)
+        if await refresh_token("initial acquisition"):
+            log.info("Initial token acquired after %d attempt(s)", attempt)
             return
-        except Exception as exc:
-            wait = min(2 ** attempt, 15)
-            log.warning(
-                "Failed to fetch initial token (attempt %d): %s — retrying in %ds",
-                attempt, exc, wait,
-            )
-            await asyncio.sleep(wait)
+        wait = min(2 ** attempt, 15)
+        log.warning(
+            "Failed to fetch initial token (attempt %d); retrying in %ds",
+            attempt, wait,
+        )
+        await asyncio.sleep(wait)
 
 
 async def refresh_loop() -> None:
@@ -120,11 +131,9 @@ async def refresh_loop() -> None:
     while True:
         await asyncio.sleep(REFRESH_INTERVAL)
         log.info("Refreshing token from token manager…")
-        try:
-            _live_token = await fetch_token()
-            log.info("Token refreshed (len=%d)", len(_live_token))
-        except Exception as exc:
-            log.error("Token refresh failed: %s — continuing with existing token", exc)
+        ok = await refresh_token("scheduled refresh")
+        if not ok:
+            log.error("Continuing with existing token after scheduled refresh failure")
 
 
 # ── Request forwarding ────────────────────────────────────────────────────────
@@ -134,19 +143,13 @@ async def handle(request: web.Request) -> web.StreamResponse:
     upstream_url = GRAPH_UPSTREAM_BASE + str(request.rel_url)
 
     # Forward all non-hop-by-hop headers, fix Host
-    fwd_headers = {
+    base_headers = {
         k: v for k, v in request.headers.items()
         if k.lower() not in _HOP_BY_HOP
     }
-    fwd_headers["Host"] = "graph.microsoft.com"
-
-    # Swap the placeholder with the live token
-    auth = fwd_headers.get("Authorization", "")
-    if OUTLOOK_TOKEN_PLACEHOLDER in auth:
-        if _live_token:
-            fwd_headers["Authorization"] = f"Bearer {_live_token}"
-        else:
-            log.warning("Placeholder in request but no live token available; forwarding as-is")
+    base_headers["Host"] = "graph.microsoft.com"
+    auth = base_headers.get("Authorization", "")
+    uses_placeholder = OUTLOOK_TOKEN_PLACEHOLDER in auth
 
     body = await request.read()
 
@@ -154,29 +157,50 @@ async def handle(request: web.Request) -> web.StreamResponse:
     # can decompress them itself. Without this, aiohttp decompresses the body
     # but the Content-Encoding header is still forwarded, confusing the client.
     async with aiohttp.ClientSession(auto_decompress=False, trust_env=True) as session:
+        retry_after_refresh = uses_placeholder
         try:
-            async with session.request(
-                method=request.method,
-                url=upstream_url,
-                headers=fwd_headers,
-                data=body or None,
-                timeout=aiohttp.ClientTimeout(total=60),
-                allow_redirects=False,
-                ssl=True,
-            ) as upstream:
-                resp_headers = {
-                    k: v for k, v in upstream.headers.items()
-                    if k.lower() not in _HOP_BY_HOP
-                }
-                response = web.StreamResponse(
-                    status=upstream.status,
-                    headers=resp_headers,
-                )
-                await response.prepare(request)
-                async for chunk in upstream.content.iter_chunked(65536):
-                    await response.write(chunk)
-                await response.write_eof()
-                return response
+            while True:
+                fwd_headers = dict(base_headers)
+                if uses_placeholder:
+                    if _live_token:
+                        fwd_headers["Authorization"] = f"Bearer {_live_token}"
+                    else:
+                        log.warning("Placeholder in request but no live token available; forwarding as-is")
+
+                async with session.request(
+                    method=request.method,
+                    url=upstream_url,
+                    headers=fwd_headers,
+                    data=body or None,
+                    timeout=aiohttp.ClientTimeout(total=60),
+                    allow_redirects=False,
+                    ssl=True,
+                ) as upstream:
+                    resp_headers = {
+                        k: v for k, v in upstream.headers.items()
+                        if k.lower() not in _HOP_BY_HOP
+                    }
+                    if upstream.status == 401 and retry_after_refresh:
+                        error_body = await upstream.read()
+                        log.warning("Graph returned 401; refreshing token and retrying once")
+                        retry_after_refresh = False
+                        if await refresh_token("Graph 401 retry"):
+                            continue
+                        return web.Response(
+                            status=upstream.status,
+                            headers=resp_headers,
+                            body=error_body,
+                        )
+
+                    response = web.StreamResponse(
+                        status=upstream.status,
+                        headers=resp_headers,
+                    )
+                    await response.prepare(request)
+                    async for chunk in upstream.content.iter_chunked(65536):
+                        await response.write(chunk)
+                    await response.write_eof()
+                    return response
         except aiohttp.ClientError as exc:
             log.error("Upstream request failed: %s %s → %s", request.method, upstream_url, exc)
             return web.Response(status=502, text=f"Bad Gateway: {exc}")

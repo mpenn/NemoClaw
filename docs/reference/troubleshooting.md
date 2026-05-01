@@ -358,6 +358,20 @@ If that line shows `unreachable`, start the local backend first and then retry t
 If the endpoint is correct but requests still fail, check for network policy rules that may block the connection.
 Then verify the credential and base URL for the provider you selected during onboarding.
 
+For NVIDIA internal compatible endpoints, check whether the host resolves the
+endpoint to loopback:
+
+```console
+$ getent hosts inference-api.nvidia.com
+127.0.0.1 inference-api.nvidia.com
+```
+
+If so, OpenShell's gateway container may not be able to use the host-local TLS
+proxy directly. Start `scripts/nvidia-inference-host-proxy.py`, set
+`NEMOCLAW_ENDPOINT_URL=http://172.17.0.1:18080/v1`, re-run
+`openshell inference set` or `nemoclaw onboard`, and recreate the sandbox if the
+provider was changed after sandbox creation.
+
 For local providers (Ollama, vLLM, NIM), the default timeout is 180 seconds.
 If large prompts still cause timeouts, increase it with `NEMOCLAW_LOCAL_INFERENCE_TIMEOUT` before re-running onboard:
 

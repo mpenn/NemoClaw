@@ -183,6 +183,7 @@ const REMOTE_PROVIDER_CONFIG = {
     providerName: "compatible-anthropic-endpoint",
     providerType: "anthropic",
     credentialEnv: "COMPATIBLE_ANTHROPIC_API_KEY",
+    providerCredentialEnv: "ANTHROPIC_API_KEY",
     endpointUrl: "",
     helpUrl: null,
     modelMode: "input",
@@ -193,6 +194,7 @@ const REMOTE_PROVIDER_CONFIG = {
     providerName: "gemini-api",
     providerType: "openai",
     credentialEnv: "GEMINI_API_KEY",
+    providerCredentialEnv: "OPENAI_API_KEY",
     endpointUrl: GEMINI_ENDPOINT_URL,
     helpUrl: "https://aistudio.google.com/app/apikey",
     modelMode: "curated",
@@ -204,6 +206,7 @@ const REMOTE_PROVIDER_CONFIG = {
     providerName: "compatible-endpoint",
     providerType: "openai",
     credentialEnv: "COMPATIBLE_API_KEY",
+    providerCredentialEnv: "OPENAI_API_KEY",
     endpointUrl: "",
     helpUrl: null,
     modelMode: "input",
@@ -735,7 +738,7 @@ async function promptValidationRecovery(label, recovery, credentialEnv = null, h
  * @param {"create"|"update"} action - Whether to create or update.
  * @param {string} name - Provider name.
  * @param {string} type - Provider type (e.g. "openai", "anthropic", "generic").
- * @param {string} credentialEnv - Credential environment variable name.
+ * @param {string} credentialEnv - OpenShell provider credential environment variable name.
  * @param {string|null} baseUrl - Optional base URL for API-compatible endpoints.
  * @returns {string[]} Argument array for runOpenshell().
  */
@@ -966,6 +969,15 @@ function writeSandboxConfigSyncFile(script) {
 
 function encodeDockerJsonArg(value) {
   return Buffer.from(JSON.stringify(value || {}), "utf8").toString("base64");
+}
+
+function encodeDockerEnvArg(value, name) {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) return "";
+  if (!/^[A-Za-z0-9@._,+:-]+$/.test(trimmed)) {
+    throw new Error(`${name} contains characters that are unsafe for a Docker ARG`);
+  }
+  return trimmed;
 }
 
 function isAffirmativeAnswer(value) {
@@ -1535,6 +1547,15 @@ function patchStagedDockerfile(
       /^ARG NEMOCLAW_MESSAGING_ALLOWED_IDS_B64=.*$/m,
       `ARG NEMOCLAW_MESSAGING_ALLOWED_IDS_B64=${encodeDockerJsonArg(messagingAllowedIds)}`,
     );
+  }
+  for (const key of ["OUTLOOK_TARGET_MAILBOX", "OUTLOOK_REPLY_TO", "OUTLOOK_ALLOWED_SENDERS"]) {
+    const value = getCredential(key) || process.env[key];
+    if (value) {
+      dockerfile = dockerfile.replace(
+        new RegExp(`^ARG ${key}=.*$`, "m"),
+        `ARG ${key}=${encodeDockerEnvArg(value, key)}`,
+      );
+    }
   }
   const sourceEtlBuildArgs = [
     "SOURCE_ETL_GITHUB_REPO",
@@ -4633,16 +4654,18 @@ async function setupInference(
         : Object.values(REMOTE_PROVIDER_CONFIG).find((entry) => entry.providerName === provider);
     while (true) {
       const resolvedCredentialEnv = credentialEnv || (config && config.credentialEnv);
+      const providerCredentialEnv =
+        (config && config.providerCredentialEnv) || resolvedCredentialEnv;
       const resolvedEndpointUrl = endpointUrl || (config && config.endpointUrl);
       const credentialValue = hydrateCredentialEnv(resolvedCredentialEnv);
       const env =
-        resolvedCredentialEnv && credentialValue
-          ? { [resolvedCredentialEnv]: credentialValue }
+        providerCredentialEnv && credentialValue
+          ? { [providerCredentialEnv]: credentialValue }
           : {};
       const providerResult = upsertProvider(
         provider,
         config.providerType,
-        resolvedCredentialEnv,
+        providerCredentialEnv,
         resolvedEndpointUrl,
         env,
       );
