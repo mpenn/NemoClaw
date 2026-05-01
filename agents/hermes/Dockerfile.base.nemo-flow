@@ -87,3 +87,4 @@ RUN curl -fsSL \
 # sitecustomize.py so they apply to all Python processes without runtime file writing.
 COPY agents/hermes/patches/sitecustomize-nemo-flow.py \
      /usr/lib/python3.11/sitecustomize.py
+RUN chmod 644 /usr/lib/python3.11/sitecustomize.py /etc/python3.11/sitecustomize.py

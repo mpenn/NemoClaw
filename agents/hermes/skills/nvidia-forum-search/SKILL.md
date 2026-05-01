@@ -1,11 +1,11 @@
 ---
 name: nvidia-forum-search
-description: Search the NVIDIA Developer Forums for recent posts and discussions.
+description: Search mirrored NVIDIA Developer Forums data from the source-etls REST bridge.
 ---
 
 # nvidia-forum-search
 
-Use this skill to search the NVIDIA Developer Forums from inside the sandbox.
+Use this skill to research NVIDIA Developer Forums data from inside the sandbox.
 
 ## When to use
 
@@ -15,29 +15,36 @@ Use this skill to search the NVIDIA Developer Forums from inside the sandbox.
 
 ## Access model
 
-- Use the JSON search endpoint.
-- Keep requests light because the forum is rate-limited in this environment.
+**Do NOT attempt to reach forums.developer.nvidia.com or docs.nvidia.com
+directly.** The sandbox has no egress to NVIDIA forum or docs hosts — those
+requests will be blocked. The only path to forum data is the source-etls REST
+mirror described below.
 
 ## Procedure
 
-### 1. Run one search request
+### 1. Run the query script via terminal
+
+Use the terminal tool to run these commands directly — do not attempt to invoke
+`source-etl-query` as a named skill tool.
 
 ```bash
-curl -s --max-time 10 \
-  "https://forums.developer.nvidia.com/search.json?q=SEARCH_TERM&order=latest"
+python3 /sandbox/.hermes-data/skills/source-etl-query/scripts/query_source_etl.py forum-topics --limit 20
+python3 /sandbox/.hermes-data/skills/source-etl-query/scripts/query_source_etl.py forum-topics --search nemoclaw --limit 10
 ```
 
-### 2. Parse the result
+### 2. Use topic IDs or titles to refine the research scope
 
-Use `python3` if needed to extract titles, dates, or topic IDs from the JSON.
+### 3. Treat missing results as an ETL/data-scope question first
 
-### 3. Stop quickly on throttling
-
-If the body says `"Slow down"`, if the response shows an error payload, or if
-the request fails, treat the forums as unavailable for this turn and move on.
+If results are empty or don't match what the user asked about, follow the
+error-handling guidance in the `source-etl-query` skill to explain what forum
+tag the mirror actually covers and whether the ETL has synced yet. Do not fall
+back to direct forum requests.
 
 ## Pitfalls
 
-- Do not retry the same search term repeatedly.
-- Do not switch to browser automation as a fallback for the same forum query.
-- Rate limiting is common, so keep searches targeted.
+- The ETL mirrors one configured forum tag — it does not cover the entire
+  forums site. If the user asks about a topic outside that tag, explain the
+  scope limit.
+- The mirrored dataset may lag the live forums by up to the ETL refresh
+  interval.

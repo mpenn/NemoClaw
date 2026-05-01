@@ -37,6 +37,10 @@ network_policies:
         enforcement: enforce
         rules:
           - allow: { method: GET, path: "/token" }
+        access: full
+      - host: login.microsoftonline.com
+        port: 443
+        access: full
     binaries:
       # PyInstaller-compiled sidecar binary at a distinct path enables OpenShell
       # binary-path policy enforcement — only the sidecar can reach Graph and

@@ -1,10 +1,10 @@
 # NemoClaw Hermes Setup Guide (NVIDIA Internal)
 
 This guide walks through standing up a NemoClaw Hermes sandbox from source with the
-policy set and credentials needed for Slack, GitHub, and NVIDIA forum research.
-It also notes the current Outlook bridge path, which is still a WIP and should be
-treated as optional. It covers building from source, creating the Slack app,
-configuring credentials, and running the first onboard.
+policy set and credentials needed for Slack, Outlook, and host-side Postgres
+research access. GitHub and NVIDIA forum ingestion happen outside OpenShell through
+the `source-etls/` stack, not through live sandbox egress. It covers building from
+source, creating the Slack app, configuring credentials, and running the first onboard.
 
 > **Important**
 >
@@ -13,6 +13,61 @@ configuring credentials, and running the first onboard.
 > `third_party/nemo-flow` submodule contents, not just on the parent repo commit.
 > If the submodule is not initialized, onboard falls back to the standard Hermes
 > base image and skips the patched NeMo-Flow image path.
+
+---
+
+## Architecture
+
+The Hermes sandbox operates with a deliberately narrow egress policy. It connects
+live to Slack and Outlook for interactions and research. GitHub and NVIDIA forum
+data are never fetched live from inside the sandbox — instead, host-side ETL
+containers scrape those sources on a schedule and write results into Postgres.
+The sandbox queries that mirror through a read-only PostgREST HTTP bridge.
+
+```mermaid
+flowchart TB
+    subgraph sandbox["OpenShell Sandbox"]
+        agent["Hermes Agent\n(LLM + Skills)"]
+    end
+
+    nvidia_inference(["NVIDIA API Catalog\ncompatible endpoint"])
+    slack(["Slack"])
+    outlook(["Outlook\n(MS Graph)"])
+
+    subgraph host["Host Machine  ·  source-etls/docker-compose.yml"]
+        postgrest["PostgREST\n(read-only REST bridge · :3100)"]
+        postgres[("PostgreSQL\n(:5432)")]
+        github_etl["github-etl\n(scheduled · hourly · deterministic)"]
+        forums_etl["forums-etl\n(scheduled · hourly · deterministic)"]
+    end
+
+    github_api(["GitHub API\n(issues · PRs · discussions)"])
+    nvidia_forums(["NVIDIA Developer Forums\n(Discourse)"])
+
+    agent -->|"LLM inference  ·  nvidia policy"| nvidia_inference
+    agent -->|"Slack Web API  ·  slack policy"| slack
+    agent -->|"MS Graph API  ·  outlook policy"| outlook
+    agent -->|"HTTP REST  ·  source-etls policy"| postgrest
+    postgrest --> postgres
+    github_etl -->|"write  (app_user)"| postgres
+    forums_etl -->|"write  (app_user)"| postgres
+    github_etl -->|"scheduled scrape"| github_api
+    forums_etl -->|"scheduled scrape"| nvidia_forums
+```
+
+**Key points:**
+
+- The agent never has direct network access to GitHub or the NVIDIA forums. All
+  GitHub and forum data the agent sees comes from the Postgres mirror.
+- Slack and Outlook are live connections from the sandbox; the agent can read and
+  write both in real time.
+- NVIDIA API Catalog egress is required for compatible-endpoint model inference.
+  It is not a research/data-ingestion path.
+- The ETL containers are non-agentic — they run fixed scraper logic on an interval
+  and have no LLM involvement.
+- The PostgREST bridge exposes a read-only HTTP API on host port 3100 and on
+  internal port 3000 in the `openshell-cluster-nemoclaw` gateway Docker network,
+  so the sandbox can reach it without live GitHub or NVIDIA forum egress.
 
 ---
 
@@ -40,7 +95,6 @@ first. The source build and onboard flow assume both are available.
 ## 1. Clone and Build from Source
 
 ```bash
-umask 0022
 git clone https://github.com/mpenn/NemoClaw.git
 cd NemoClaw
 git checkout community-sentiment-issue-tracker-demo
@@ -67,6 +121,16 @@ Install all dependencies and build from source:
 cd nemoclaw && "$NODE22" "$(command -v npm)" install && "$NODE22" "$(command -v npm)" run build && cd ..
 cd nemoclaw-blueprint && uv sync && cd ..
 ```
+
+Register the `nemoclaw` command on your PATH:
+
+```bash
+"$NODE22" "$(command -v npm)" link
+```
+
+After this, `nemoclaw` is available as a command in your shell. The rest of this
+guide uses `nemoclaw` directly. If `npm link` fails with a permissions error, run
+it with `sudo`.
 
 ---
 
@@ -147,8 +211,9 @@ Copy the template and fill in your values:
 cp env.template .env
 ```
 
-Open `.env` and fill in the following. Leave the Outlook fields blank unless you are
-explicitly testing the Outlook bridge WIP path.
+Open `.env` and fill in the following. The sandbox queries a host-side
+Postgres database that is populated by `source-etls/`, so GitHub and forum data
+live in that mirror rather than being fetched live from the sandbox.
 
 ```ini
 NEMOCLAW_AGENT=hermes
@@ -164,16 +229,29 @@ SLACK_BOT_TOKEN=xoxb-<your bot token from OAuth & Permissions>
 SLACK_APP_TOKEN=xapp-<your app-level token from Socket Mode>
 SLACK_ALLOWED_IDS=<your Slack user ID, e.g. U0887Q5UVV4>
 
-GITHUB_TOKEN=ghp_<optional: a GitHub personal access token>
+GITHUB_TOKEN=<optional GitHub PAT; leave blank for public repos>
+SOURCE_ETL_GITHUB_REPO=NVIDIA/NemoClaw
+SOURCE_ETL_FORUM_TAG=nemoclaw
+SOURCE_ETL_POSTGRES_HOST=host.openshell.internal
+SOURCE_ETL_POSTGRES_PORT=5432
+SOURCE_ETL_POSTGRES_DB=source_etls
+SOURCE_ETL_POSTGRES_SUPERUSER=postgres
+SOURCE_ETL_POSTGRES_SUPERUSER_PASSWORD=<set for the host-side Postgres container>
+SOURCE_ETL_POSTGRES_APP_USER=source_etl_writer
+SOURCE_ETL_POSTGRES_APP_PASSWORD=<set for the ETL writer user>
+SOURCE_ETL_POSTGRES_READER_USER=source_etl_reader
+SOURCE_ETL_POSTGRES_READER_PASSWORD=<set for the PostgREST read-only user>
+SOURCE_ETL_API_PORT=3100
+SOURCE_ETL_OPENSHELL_NETWORK=openshell-cluster-nemoclaw
 
-OUTLOOK_TENANT_ID=<optional: Microsoft tenant id>
-OUTLOOK_CLIENT_ID=<optional: Microsoft app client id>
-OUTLOOK_CLIENT_SECRET=<optional: Microsoft app client secret>
-OUTLOOK_BOT_MAILBOX=<optional: shared mailbox the bridge monitors>
-OUTLOOK_USER_MAILBOX=<optional: your mailbox used for scheduled-job replies>
+OUTLOOK_TENANT_ID=<Microsoft tenant id>
+OUTLOOK_CLIENT_ID=<Microsoft app client id>
+OUTLOOK_CLIENT_SECRET=<Microsoft app client secret>
+OUTLOOK_BOT_MAILBOX=<shared mailbox the bridge monitors>
+OUTLOOK_USER_MAILBOX=<your mailbox used for scheduled-job replies>
 
 NEMOCLAW_SANDBOX_NAME=nemoclaw-hermes
-NEMOCLAW_POLICY_PRESETS=slack,github,outlook,nvidia-forum
+NEMOCLAW_POLICY_PRESETS=slack,outlook,postgres
 
 # Optional Phoenix telemetry endpoint. Leave unset unless you are enabling Phoenix.
 # PHOENIX_COLLECTOR_ENDPOINT=http://172.17.0.1:6006/v1/traces
@@ -182,20 +260,94 @@ NEMOCLAW_POLICY_PRESETS=slack,github,outlook,nvidia-forum
 > **Note on `SLACK_ALLOWED_IDS`:** Only the user IDs listed here can message the bot.
 > Add multiple IDs as a comma-separated list. This is the primary access control.
 >
-> **Note on `GITHUB_TOKEN`:** Optional. If set, the agent can use `gh` to query
-> GitHub issues and PRs. Create a classic PAT at [github.com/settings/tokens](https://github.com/settings/tokens)
-> with `repo` scope. After creating the token, authorize it for NVIDIA SAML SSO by
-> clicking **Configure SSO** next to the token and then **Authorize** next to the
-> NVIDIA organization.
+> **Note on `GITHUB_TOKEN`:** Optional. In this setup it is only used by the
+> host-side GitHub ETL, not for live sandbox GitHub access. Leave it blank for
+> public repos. Create a classic PAT at
+> [github.com/settings/tokens](https://github.com/settings/tokens) with `repo`
+> scope only if you need private repo support later.
+>
+> **Note on `SOURCE_ETL_OPENSHELL_NETWORK`:** This is the Docker network created
+> by the OpenShell gateway, not the sandbox name. With the default gateway name
+> used by this guide, the network is `openshell-cluster-nemoclaw`.
+>
+> **Note on `SOURCE_ETL_POSTGRES_HOST`:** Keep the default
+> `host.openshell.internal` value in `.env`; the final policy applied after
+> onboard is generated from the live Docker network IPs by `scripts/update-policy.sh`.
+>
+> **Note on ETL Postgres users:** The host-side ETLs write with
+> `SOURCE_ETL_POSTGRES_APP_USER`. PostgREST connects with
+> `SOURCE_ETL_POSTGRES_READER_USER`. Hermes only reaches the read-only REST
+> bridge and does not need raw database credentials.
+>
+> **Note on `SOURCE_ETL_FORUM_TAG`:** The default forum source is the Discourse
+> `nemoclaw` tag, not a single category page. The ETL ingests tagged topic
+> JSON from the NVIDIA forums and writes it into Postgres.
 >
 > **Note on `NVIDIA_API_KEY`:** Some local `.env` files still carry `NVIDIA_API_KEY`
 > from older or different inference flows. For this Hermes guide, the active path is
 > `compatible-endpoint`, so `COMPATIBLE_API_KEY` and `NEMOCLAW_PROVIDER_KEY` are the
 > variables that matter.
 
+Smoke-test the compatible endpoint before building the sandbox:
+
+```bash
+bash scripts/test-compatible-endpoint.sh
+```
+
+This checks `GET /models` and a minimal `POST /chat/completions` using the model
+and endpoint in `.env`.
+
 ---
 
-## 5. Deploy Observability System (Optional)
+## 5. Host-Side Source ETLs
+
+This NVIDIA path assumes GitHub and NVIDIA forum data are scraped outside the
+sandbox and written into Postgres for Hermes to query via PostgREST.
+
+Target ETL defaults:
+
+- GitHub repo: `NVIDIA/NemoClaw`
+- NVIDIA forums tag: `nemoclaw`
+- refresh interval: hourly
+- initial backfill window: last 72 hours
+
+The ETL implementation lives under `source-etls/` and runs on the host, outside
+OpenShell. Start it after the first onboard step creates the OpenShell gateway
+network; the exact commands are in [7b. Start the host-side source ETLs](#7b-start-the-host-side-source-etls).
+
+This brings up four containers:
+
+| Container | Role |
+|-----------|------|
+| `postgres` | Shared data store and ETL metadata |
+| `github-etl` | Scrapes GitHub issues, PRs, and discussions on an hourly interval |
+| `forums-etl` | Scrapes NVIDIA Developer Forum topics on an hourly interval |
+| `postgrest` | Read-only HTTP API bridge on `:3100` exposing the `api` schema |
+
+### Docker network requirement
+
+The `postgrest` container must be reachable from the OpenShell L7 proxy on the
+gateway cluster network. The `docker-compose.yml` declares an external network
+named by `SOURCE_ETL_OPENSHELL_NETWORK`, defaulting to
+`openshell-cluster-nemoclaw`, and attaches `postgrest` to it automatically.
+
+This network is created by the OpenShell gateway when the sandbox is first started.
+**Run onboard before `docker compose up`**, or the external network will not exist
+yet and compose will fail.
+
+The Hermes sandbox policy set for this path is intentionally narrow:
+
+- `slack`
+- `outlook`
+- `postgres`
+
+Do not add `github` or `nvidia-forum` presets for this path. The ETL mirror is
+the intended source for that data. Adding those presets would give the sandbox
+live egress to external hosts that it does not need and should not have.
+
+---
+
+## 6. Deploy Observability System (Optional)
 
 NemoClaw integrates with [Arize Phoenix](https://arize.com/docs/phoenix) for agent
 telemetry. When enabled, each conversation produces an OpenTelemetry trace with spans
@@ -203,7 +355,7 @@ for the LLM call, each tool invocation, and the overall session.
 
 This step is optional. Skip it if you do not need trace-level observability.
 
-### 5a. Start Phoenix
+### 6a. Start Phoenix
 
 In a separate terminal, pull and run the Phoenix container:
 
@@ -217,9 +369,9 @@ Phoenix exposes two ports:
 - `6006` for the web UI and OTLP/HTTP trace ingestion at `/v1/traces`
 - `4317` for OTLP/gRPC trace ingestion
 
-### 5b. Configure NemoClaw to Send Traces
+### 6b. Configure NemoClaw to Send Traces
 
-Add the following to `.env`:
+Add the following to `.env` before onboarding:
 
 ```ini
 PHOENIX_COLLECTOR_ENDPOINT=http://172.17.0.1:6006/v1/traces
@@ -235,42 +387,41 @@ host. If your Docker bridge uses a different subnet, replace it with the correct
 > If you already onboarded before initializing the submodule, rerun a forced rebuild
 > after the submodule update so NemoClaw actually builds and deploys the patched image.
 
-### 5c. Rebuild and Verify
+### 6c. If Enabling Phoenix After Onboard
 
-Rebuild the sandbox to pick up the new endpoint:
-
-```bash
-set -a && source .env && set +a
-export NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE=1
-NODE22=$(npx -y node@22 -p 'process.execPath')
-"$NODE22" ./bin/nemoclaw.js <sandbox-name> rebuild --yes
-```
-
-If you are iterating on the NeMo-Flow submodule or `Dockerfile.base.nemo-flow`, drop
-the cached patched base image before rebuilding so Docker does not reuse an old local
+If you enable Phoenix after the sandbox already exists, rebuild the sandbox so the
+image picks up the new endpoint, then rerun the policy apply in step 7c. If you
+are iterating on the NeMo-Flow submodule or `Dockerfile.base.nemo-flow`, drop the
+cached patched base image before rebuilding so Docker does not reuse an old local
 base:
 
 ```bash
+set -a && source .env && set +a
+export NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE=1
 docker image rm ghcr.io/nvidia/nemoclaw/hermes-sandbox-base-nemo-flow:latest || true
+nemoclaw nemoclaw-hermes rebuild --yes
+bash scripts/update-policy.sh
+openshell policy set --policy scripts/policy.yaml --wait "${NEMOCLAW_SANDBOX_NAME:-nemoclaw-hermes}"
 ```
 
-Send a message to your bot in Slack, then open [http://localhost:6006](http://localhost:6006).
-Under **Projects -> default**, you should see a new trace for each conversation turn.
+Send a message to your bot in Slack after setup, then open
+[http://localhost:6006](http://localhost:6006). Under **Projects -> default**,
+you should see a new trace for each conversation turn.
 
 ---
 
-## 6. Run Onboard
+## 7. Run Onboard, Start ETLs, and Apply Policy
+
+### 7a. Run onboard
 
 Source `.env` before running. The NemoClaw CLI reads all configuration from
 `process.env` and does not load `.env` automatically. The `set -a` flag is required
-so variables are exported to child processes. Use the explicit Node 22 binary if
-your host default `node` is older.
+so variables are exported to child processes.
 
 ```bash
 set -a && source .env && set +a
 export NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE=1
-NODE22=$(npx -y node@22 -p 'process.execPath')
-"$NODE22" ./bin/nemoclaw.js onboard --non-interactive
+nemoclaw onboard --non-interactive
 ```
 
 This will:
@@ -278,8 +429,7 @@ This will:
 1. Pull the base sandbox image
 2. Build a sandbox container image with your configuration baked in
 3. Push it to the local OpenShell gateway
-4. Apply the network policy presets
-5. Start the sandbox and attach the configured channel providers
+4. Start the sandbox and attach the configured channel providers
 
 The first run takes 3-5 minutes. Subsequent rebuilds are faster because the base
 image is cached.
@@ -292,15 +442,14 @@ rebuild:
 ```bash
 set -a && source .env && set +a
 export NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE=1
-NODE22=$(npx -y node@22 -p 'process.execPath')
-"$NODE22" ./bin/nemoclaw.js nemoclaw-hermes rebuild --yes
+nemoclaw nemoclaw-hermes rebuild --yes
 ```
 
 During onboarding you may still see:
 
 - `Configuring inference (NIM)` even when using the compatible-endpoint flow
 - an initial Hermes or dashboard probe timeout before the sandbox becomes healthy
-- the sandbox starting up before all preset policies are attached
+- the sandbox starting before the final source-etls policy has been applied
 
 Those messages are expected with the current onboard flow and do not necessarily
 mean the install failed.
@@ -310,26 +459,87 @@ To rebuild after changing `.env` or any agent file:
 ```bash
 set -a && source .env && set +a
 export NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE=1
-NODE22=$(npx -y node@22 -p 'process.execPath')
-"$NODE22" ./bin/nemoclaw.js nemoclaw-hermes rebuild --yes
+nemoclaw nemoclaw-hermes rebuild --yes
 ```
+
+### 7b. Start the host-side source ETLs
+
+After onboard has created the OpenShell gateway network, start the host-side ETL
+stack:
+
+```bash
+set -a && source .env && set +a
+cd source-etls
+docker compose up -d --build
+docker compose ps
+cd ..
+```
+
+This starts the first 72-hour backfill immediately. The GitHub and forum ETLs
+then refresh hourly.
+
+### 7c. Update and apply the network policy
+
+The sandbox policy must allow the live IP address that Docker assigns to the
+`source-etls-postgrest` container. This IP is assigned at container start and can
+change whenever the container is recreated.
+Run this after the source-etls stack is running, after every onboard or rebuild,
+and any time the source-etls stack is restarted:
+
+```bash
+set -a && source .env && set +a
+bash scripts/update-policy.sh
+openshell policy set --policy scripts/policy.yaml --wait "${NEMOCLAW_SANDBOX_NAME:-nemoclaw-hermes}"
+```
+
+`update-policy.sh` reads `scripts/policy-template.yaml`, discovers the current
+container IP via `docker inspect`, and writes the resolved policy to
+`scripts/policy.yaml`. It uses `SOURCE_ETL_OPENSHELL_NETWORK` when set, otherwise
+it looks for an attached `openshell-cluster-*` network. The `openshell policy set`
+command then loads that file into the live sandbox.
+
+If `PHOENIX_COLLECTOR_ENDPOINT` is set, `update-policy.sh` also adds the Phoenix
+collector endpoint to the generated policy. If it is unset, no Phoenix egress is
+included.
+
+> **Note:** `scripts/policy.yaml` is gitignored — it contains IPs specific to
+> your host and should not be committed.
 
 ---
 
-## 7. Verify
+## 8. Verify
 
-Once onboard completes, open Slack and send a direct message to your bot. It should
-respond within a few seconds. If there is no response after 30 seconds, check logs:
+First verify the host-side mirror is serving data:
 
 ```bash
-NODE22=$(npx -y node@22 -p 'process.execPath')
-"$NODE22" ./bin/nemoclaw.js nemoclaw-hermes logs --follow
+set -a && source .env && set +a
+curl -s "http://localhost:${SOURCE_ETL_API_PORT:-3100}/github_issues?select=number,title,updated_at&order=updated_at.desc&limit=5"
+curl -s "http://localhost:${SOURCE_ETL_API_PORT:-3100}/forum_topics?select=topic_id,title,last_posted_at&order=last_posted_at.desc&limit=5"
 ```
 
-The most common startup issue is a policy race: the sandbox starts and tries to
-connect to Slack before the preset policies have finished loading. This resolves
-automatically once the preset set is attached. You may also see an onboarding warning
-that Hermes did not respond to the initial 90 second health probe even though the
+Then verify the sandbox can reach the same bridge through the applied OpenShell
+policy:
+
+```bash
+openshell sandbox exec --name "${NEMOCLAW_SANDBOX_NAME:-nemoclaw-hermes}" -- \
+  python3 /sandbox/.hermes-data/skills/source-etl-query/scripts/query_source_etl.py github-issues --limit 5
+openshell sandbox exec --name "${NEMOCLAW_SANDBOX_NAME:-nemoclaw-hermes}" -- \
+  python3 /sandbox/.hermes-data/skills/source-etl-query/scripts/query_source_etl.py forum-topics --limit 5
+```
+
+Once onboard, the ETL stack, and the manual policy apply complete, open Slack and
+send a direct message to your bot. It should respond within a few seconds. If
+there is no response after 30 seconds, check logs:
+
+```bash
+nemoclaw nemoclaw-hermes logs --follow
+```
+
+The most common startup issue in this flow is a missing final policy apply: the
+sandbox can be healthy before the source-etls container IP has been added to
+the live policy. Re-run [7c](#7c-update-and-apply-the-network-policy) after the
+source-etls containers are running. You may also see an onboarding warning that
+Hermes did not respond to the initial 90 second health probe even though the
 sandbox becomes healthy shortly afterward.
 
 ---
@@ -342,12 +552,21 @@ The `NEMOCLAW_POLICY_PRESETS` value in `.env` controls which external services t
 sandbox agent is allowed to reach. Each preset is a named YAML file in
 `nemoclaw-blueprint/policies/presets/`.
 
+The active preset set for the Hermes NVIDIA path is `slack,outlook,postgres`.
+After step 7c, the live sandbox policy is the resolved `scripts/policy.yaml` file:
+it preserves the required NVIDIA compatible-endpoint inference egress and adds the
+resolved source-etls PostgREST endpoint. It should not include
+`github`, `nvidia-forum`, or `nous_research`.
+
 | Preset | What it opens | Notes |
 |--------|--------------|-------|
-| `slack` | `slack.com`, `api.slack.com`, `hooks.slack.com`, Socket Mode WebSocket | Required for Slack integration and Slack Web API research |
-| `github` | `github.com`, `api.github.com` | Enables `gh` CLI and `git`; requires `GITHUB_TOKEN` |
-| `outlook` | `graph.microsoft.com`, `login.microsoftonline.com` | Optional WIP Outlook bridge path; not required for the main Slack/GitHub/forum workflow |
-| `nvidia-forum` | `forums.developer.nvidia.com`, `docs.nvidia.com` | NVIDIA Developer Forums and docs |
+| `slack` | `slack.com`, `api.slack.com`, `hooks.slack.com`, Socket Mode WebSocket | Required — Slack is a live interaction and research channel |
+| `outlook` | `graph.microsoft.com`, `login.microsoftonline.com` | Required — Outlook mailbox monitoring and replies |
+| `postgres` | Source-etls PostgREST bridge | Required — gives the sandbox access to the read-only source-etls REST bridge |
+
+The `github` and `nvidia-forum` presets exist in `nemoclaw-blueprint/policies/presets/`
+but are **not included** in this path. The sandbox has no need for live egress to
+those hosts because the ETL mirror handles all GitHub and forum data ingestion.
 
 To remove a preset, delete it from `NEMOCLAW_POLICY_PRESETS` and rebuild. The sandbox
 cannot reach any host not covered by an active preset.
@@ -367,7 +586,10 @@ The agent's system prompt (`agents/hermes/SOUL.md`) sets the sandbox context:
 Skills are loaded on demand by the agent when relevant to a task. They live in
 `agents/hermes/skills/`.
 
-- `github-interactions` for GitHub reads and repo operations
-- `slack-channel-summarizer` for Slack channel resolution and message history
-- `nvidia-forum-search` for NVIDIA Developer Forum access
-- `cross-source-gap-analysis` for comparing Slack, GitHub, and forum findings
+| Skill | Purpose |
+|-------|---------|
+| `source-etl-query` | Query the host-side PostgREST bridge for mirrored GitHub and NVIDIA forum data. This is the primary data-access skill for both GitHub and forum research. |
+| `github-interactions` | GitHub repo research (issues, PRs, discussions) — routes through the source-etls REST mirror, not live GitHub egress. |
+| `nvidia-forum-search` | NVIDIA Developer Forum research — routes through the source-etls REST mirror, not live forum egress. |
+| `slack-channel-summarizer` | Resolve Slack channels by name or ID and read their message history via the Slack Web API. |
+| `cross-source-gap-analysis` | Synthesize findings across Slack, GitHub, and NVIDIA forum sources to identify gaps, alignment issues, and follow-ups. |

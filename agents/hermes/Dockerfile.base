@@ -105,3 +105,4 @@ RUN pip3 install --no-cache-dir --break-system-packages \
 # Python processes in the container without any runtime file writing.
 COPY agents/hermes/patches/sitecustomize.py \
      /usr/lib/python3.11/sitecustomize.py
+RUN chmod 644 /usr/lib/python3.11/sitecustomize.py /etc/python3.11/sitecustomize.py

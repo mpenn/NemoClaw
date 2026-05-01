@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+preset:
+  name: postgres
+  description: "Host-side source-etls access through the read-only HTTP query bridge"
+
+network_policies:
+  postgres:
+    name: postgres
+    endpoints:
+      - host: host.openshell.internal
+        port: 3100
+        protocol: rest
+        enforcement: enforce
+        access: full
+    binaries:
+      - { path: /usr/bin/python3.11 }
+      - { path: /usr/local/bin/hermes }

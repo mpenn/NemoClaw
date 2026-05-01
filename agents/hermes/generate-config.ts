@@ -36,6 +36,14 @@ const ALLOWED_USERS_ENV: Record<string, string> = {
   slack: "SLACK_ALLOWED_USERS",
 };
 
+const SOURCE_ETL_ENV = [
+  "SOURCE_ETL_GITHUB_REPO",
+  "SOURCE_ETL_FORUM_TAG",
+  "SOURCE_ETL_API_URL",
+  "SOURCE_ETL_API_HOST",
+  "SOURCE_ETL_API_PORT",
+] as const;
+
 function main(): void {
   const model = process.env.NEMOCLAW_MODEL!;
   const baseUrl = process.env.NEMOCLAW_INFERENCE_BASE_URL!;
@@ -165,9 +173,15 @@ function main(): void {
     }
   }
   // Suppress the "no home channel" first-message prompt without setting a real channel.
-    if (msgChannels.includes("slack")) {
-      envLines.push("SLACK_HOME_CHANNEL=none");
+  if (msgChannels.includes("slack")) {
+    envLines.push("SLACK_HOME_CHANNEL=none");
+  }
+  for (const key of SOURCE_ETL_ENV) {
+    const value = process.env[key]?.trim();
+    if (value) {
+      envLines.push(`${key}=${value}`);
     }
+  }
 
   const envPath = join(homedir(), ".hermes", ".env");
   writeFileSync(envPath, envLines.length > 0 ? envLines.join("\n") + "\n" : "");

@@ -1135,62 +1135,6 @@ async function configurePhoenixCollector(agent) {
 }
 
 /**
- * Apply an inline Phoenix OTLP egress rule to the running Hermes sandbox.
- * Parses host+port from PHOENIX_COLLECTOR_ENDPOINT and merges into the live policy.
- */
-async function applyPhoenixEgressPolicy(sandboxName) {
-  const phoenixEndpoint =
-    getCredential(PHOENIX_COLLECTOR_ENDPOINT_ENV) ||
-    process.env[PHOENIX_COLLECTOR_ENDPOINT_ENV];
-  if (!phoenixEndpoint) return;
-
-  let phoenixHost;
-  let phoenixPort;
-  try {
-    const u = new URL(phoenixEndpoint);
-    phoenixHost = u.hostname;
-    phoenixPort = parseInt(u.port || "4318", 10);
-  } catch {
-    console.warn(`  Warning: ${PHOENIX_COLLECTOR_ENDPOINT_ENV} is not a valid URL — skipping egress rule`);
-    return;
-  }
-
-  const presetEntries = [
-    "  phoenix_collector:",
-    "    name: phoenix_collector",
-    "    endpoints:",
-    `      - host: ${phoenixHost}`,
-    `        port: ${phoenixPort}`,
-    "        protocol: rest",
-    "        enforcement: enforce",
-    "        rules:",
-    '          - allow: { method: POST, path: "/**" }',
-    "    binaries:",
-    "      - { path: /usr/bin/python3.11 }",
-  ].join("\n");
-
-  let rawPolicy = "";
-  try {
-    rawPolicy = runCapture(policies.buildPolicyGetCommand(sandboxName), { ignoreError: true });
-  } catch {
-    /* use empty baseline */
-  }
-  const currentPolicy = policies.parseCurrentPolicy(rawPolicy);
-  const merged = policies.mergePresetIntoPolicy(currentPolicy, presetEntries);
-
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-policy-"));
-  const tmpFile = path.join(tmpDir, "policy.yaml");
-  fs.writeFileSync(tmpFile, merged, { encoding: "utf-8", mode: 0o600 });
-  try {
-    run(policies.buildPolicySetCommand(tmpFile, sandboxName));
-    console.log(`  ✓ Phoenix OTLP egress enabled (${phoenixHost}:${phoenixPort})`);
-  } finally {
-    try { fs.unlinkSync(tmpFile); } catch { /* ignored */ }
-    try { fs.rmdirSync(tmpDir); } catch { /* ignored */ }
-  }
-}
-
-/**
  * Prompt for (or read) the Outlook token manager host, then ensure the
  * Outlook app is authenticated. If no cached session exists, drives the
  * device code flow inline: POST /auth/start → display URL+code → poll
@@ -1520,6 +1464,21 @@ function patchStagedDockerfile(
     dockerfile = dockerfile.replace(
       /^ARG NEMOCLAW_MESSAGING_ALLOWED_IDS_B64=.*$/m,
       `ARG NEMOCLAW_MESSAGING_ALLOWED_IDS_B64=${encodeDockerJsonArg(messagingAllowedIds)}`,
+    );
+  }
+  const sourceEtlBuildArgs = [
+    "SOURCE_ETL_GITHUB_REPO",
+    "SOURCE_ETL_FORUM_TAG",
+    "SOURCE_ETL_API_URL",
+    "SOURCE_ETL_API_HOST",
+    "SOURCE_ETL_API_PORT",
+  ];
+  for (const envName of sourceEtlBuildArgs) {
+    const envValue = process.env[envName];
+    if (!envValue) continue;
+    dockerfile = dockerfile.replace(
+      new RegExp(`^ARG ${envName}=.*$`, "m"),
+      `ARG ${envName}=${envValue}`,
     );
   }
   if (Object.keys(discordGuilds).length > 0) {
@@ -3643,6 +3602,7 @@ async function createSandbox(
     if (phoenixEndpoint) {
       envArgs.push(formatEnvAssignment(PHOENIX_COLLECTOR_ENDPOINT_ENV, phoenixEndpoint));
     }
+
     // TOKEN_MANAGER_HOST: baked into the image (Phoenix pattern) AND passed at
     // runtime so a re-run without image rebuild still picks up the latest value.
     const tokenManagerHost =
@@ -3666,6 +3626,18 @@ async function createSandbox(
       getCredential("OUTLOOK_ALLOWED_SENDERS") || process.env.OUTLOOK_ALLOWED_SENDERS;
     if (outlookAllowedSenders) {
       envArgs.push(formatEnvAssignment("OUTLOOK_ALLOWED_SENDERS", outlookAllowedSenders));
+
+    for (const envKey of [
+      "SOURCE_ETL_GITHUB_REPO",
+      "SOURCE_ETL_FORUM_TAG",
+      "SOURCE_ETL_API_URL",
+      "SOURCE_ETL_API_HOST",
+      "SOURCE_ETL_API_PORT",
+    ]) {
+      const value = getCredential(envKey) || process.env[envKey];
+      if (value) {
+        envArgs.push(formatEnvAssignment(envKey, value));
+      }
     }
   }
   // Pass GATEWAY_ALLOW_ALL_USERS into the sandbox at runtime when the host
@@ -3676,6 +3648,14 @@ async function createSandbox(
   if (process.env.GATEWAY_ALLOW_ALL_USERS) {
     envArgs.push(
       formatEnvAssignment("GATEWAY_ALLOW_ALL_USERS", process.env.GATEWAY_ALLOW_ALL_USERS),
+    );
+  }
+  if (process.env.NEMOCLAW_DECODE_PROXY_DEBUG) {
+    envArgs.push(
+      formatEnvAssignment(
+        "NEMOCLAW_DECODE_PROXY_DEBUG",
+        process.env.NEMOCLAW_DECODE_PROXY_DEBUG,
+      ),
     );
   }
   const sandboxEnv = buildSubprocessEnv();
@@ -6510,6 +6490,7 @@ async function onboard(opts = {}) {
       }
     }
 
+
     // Apply Phoenix OTLP egress rule after policies are locked in.
     // Only for Hermes (NeMo-Flow telemetry) and only in enforced mode.
     if (agent?.name === "hermes" && !dangerouslySkipPermissions) {
@@ -6518,6 +6499,10 @@ async function onboard(opts = {}) {
         await applyOutlookTokenManagerEgressPolicy(sandboxName);
       }
     }
+
+    // Source ETL policy depends on post-onboard Docker IPs. Apply it explicitly
+    // with scripts/update-policy.sh followed by openshell policy set.
+
 
     onboardSession.completeSession({ sandboxName, provider, model });
     completed = true;
