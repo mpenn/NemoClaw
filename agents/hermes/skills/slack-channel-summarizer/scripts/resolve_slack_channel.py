@@ -25,7 +25,7 @@ import urllib.request
 from typing import Any, Dict, Optional
 
 
-API_BASE = "https://api.slack.com/api"
+API_BASE = "https://slack.com/api"
 
 
 def api_call(token: str, method: str, params: Dict[str, str]) -> Dict[str, Any]:

@@ -1,77 +1,38 @@
 ---
 name: cross-source-gap-analysis
-description: Compare findings across Slack, GitHub, and NVIDIA forums to identify alignment gaps, missing coverage, and follow-ups.
+description: Research a question across multiple configured sources and synthesize what the evidence supports.
 ---
 
 # cross-source-gap-analysis
 
-Use this skill when the task is to compare or synthesize information across
-multiple sources rather than merely access one source.
+Use this skill when one source is unlikely to be enough: Slack plus email,
+GitHub plus forums, several channels, or any request for a broader view.
 
-## When to use
+## Approach
 
-- Compare Slack discussion against GitHub issues or PRs
-- Compare Slack or GitHub findings against NVIDIA forum discussion
-- Identify missing coverage, inconsistent narratives, or follow-up areas across sources
+- Start source-neutral. Ask what evidence would answer the user's question, then
+  choose the relevant source skills.
+- Search broadly enough to avoid anchoring on the first hit or one source type.
+  Use multiple terms, aliases, likely channels/lists/repos, and reasonable time
+  windows.
+- Refine after the broad pass. Keep the strongest, most relevant evidence; drop
+  duplicates, bot noise, and low-signal hits.
+- Compare sources only when comparison helps. Do not force a gap-analysis frame
+  onto a plain research or summary request.
+- Distinguish absence of evidence from evidence of absence. Say when a source
+  was sampled, inaccessible, or too thin to support a strong claim.
 
-## Inputs
+## Answer
 
-Load the source skills you need first:
-
-- `slack-channel-summarizer`
-- `slack-channel-finder`
-- `source-etl-query`
-- `outlook-email-search`
-
-This skill does not define how to access those systems. It defines how to
-combine the findings once you have them.
-
-## Procedure
-
-### 1. Gather the minimum useful evidence from each source
-
-Prefer a small, relevant slice from each source over broad collection. For example:
-
-- a recent Slack window for the relevant channel
-- mirrored GitHub issues, PRs, or discussions for the repo or feature area
-- mirrored NVIDIA forum topics for the `nemoclaw` tag scope
-
-### 2. Normalize what each source is saying
-
-Reduce each source to short bullets such as:
-
-- active topics
-- reported problems
-- decisions or planned work
-- requests for help
-- unresolved questions
-
-### 3. Compare across sources
-
-Look for:
-
-- topics active in one source but absent in another
-- issues discussed informally in Slack but not tracked in GitHub
-- GitHub work that appears to have little or no discussion in Slack
-- repeated mirrored forum concerns that are not reflected in Slack or GitHub
-- conflicting descriptions of status, priority, or ownership
-
-### 4. Present the result
-
-A good default structure is:
-
-- scope and time window
-- what all sources agree on
-- gaps or mismatches
-- concrete follow-ups
-
-Keep the comparison grounded in evidence from the sources you actually checked.
-Do not invent gaps just because one source had less data available.
+- Lead with the answer.
+- Keep it concise and write in plain text.
+- Support important claims with specific evidence from the checked sources:
+  message, email subject, issue, PR, forum topic, date, author, or channel.
+- Include search scope only when it explains confidence, limits, or surprising
+  results.
 
 ## Pitfalls
 
-- Do not force a gap-analysis framing when the user only asked for source access
-  or a plain summary.
-- Do not over-collect. A narrow comparison is usually better than an exhaustive scrape.
-- Distinguish between "not discussed" and "not observed in the sampled data".
-- Distinguish between “not observed in the mirror” and “not present on the live source”.
+- Do not over-collect after the answer is already clear.
+- Do not hide conflicting evidence; summarize the disagreement briefly.
+- Do not treat mirrored data as proof of live-source absence.

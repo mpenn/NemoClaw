@@ -94,8 +94,20 @@ def _odata_string(value: str) -> str:
     return value.replace("'", "''")
 
 
+def _graph_url(path_or_url: str) -> str:
+    if path_or_url.startswith(("http://", "https://")):
+        parsed = urllib.parse.urlparse(path_or_url)
+        if parsed.netloc == "graph.microsoft.com" and parsed.path.startswith("/v1.0/"):
+            url = f"{_graph_base()}/{parsed.path[len('/v1.0/'):].lstrip('/')}"
+            if parsed.query:
+                url = f"{url}?{parsed.query}"
+            return url
+        return path_or_url
+    return f"{_graph_base()}/{path_or_url.lstrip('/')}"
+
+
 def _graph_get(path: str) -> dict:
-    url = f"{_graph_base()}/{path.lstrip('/')}"
+    url = _graph_url(path)
     req = urllib.request.Request(
         url,
         headers={
@@ -172,9 +184,16 @@ def _build_params(args: argparse.Namespace) -> dict[str, str]:
     if args.unread:
         filters.append("isRead eq false")
 
+    select_fields = ["id", "subject", "from", "receivedDateTime", "isRead", "hasAttachments", "bodyPreview"]
+    if args.to or args.cc or args.recipient:
+        select_fields.extend(["toRecipients", "ccRecipients"])
+
+    local_filters = bool(args.to or args.cc or args.recipient or (search_terms and filters))
+    page_size = min(max(args.top, args.scan if local_filters else args.top), 200)
+
     params: dict[str, str] = {
-        "$select": "id,subject,from,receivedDateTime,isRead,hasAttachments,bodyPreview",
-        "$top": str(50 if search_terms and filters else min(args.top, 50)),
+        "$select": ",".join(select_fields),
+        "$top": str(page_size),
     }
 
     if search_terms and not filters:
@@ -205,6 +224,81 @@ def _query_matches(msg: dict, query: str | None) -> bool:
     return all(term in haystack for term in terms)
 
 
+def _recipient_addresses(msg: dict, field: str) -> set[str]:
+    addresses: set[str] = set()
+    for recipient in msg.get(field, []) or []:
+        email = recipient.get("emailAddress", {})
+        address = email.get("address", "").strip().lower()
+        if address:
+            addresses.add(address)
+    return addresses
+
+
+def _recipient_names(msg: dict, field: str) -> set[str]:
+    names: set[str] = set()
+    for recipient in msg.get(field, []) or []:
+        email = recipient.get("emailAddress", {})
+        name = email.get("name", "").strip().lower()
+        if name:
+            names.add(name)
+    return names
+
+
+def _normalize_targets(values: list[str]) -> set[str]:
+    return {value.strip().lower() for value in values if value.strip()}
+
+
+def _match_text(value: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", value.lower())).strip()
+
+
+def _match_tokens(value: str) -> set[str]:
+    tokens: set[str] = set()
+    for token in _match_text(value).split():
+        tokens.add(token)
+        if len(token) > 3 and token.endswith("s"):
+            tokens.add(token[:-1])
+    return tokens
+
+
+def _target_matches(targets: set[str], addresses: set[str], names: set[str]) -> bool:
+    if not targets:
+        return True
+    searchable = {_match_text(value) for value in addresses | names if value}
+    searchable_tokens = [_match_tokens(value) for value in addresses | names if value]
+    for target in targets:
+        if target in addresses:
+            return True
+        normalized_target = _match_text(target)
+        if normalized_target and any(normalized_target in value for value in searchable):
+            return True
+        target_tokens = _match_tokens(target)
+        if target_tokens and any(target_tokens.issubset(tokens) for tokens in searchable_tokens):
+            return True
+        if any(target in name for name in names):
+            return True
+    return False
+
+
+def _recipients_match(msg: dict, args: argparse.Namespace) -> bool:
+    to_targets = _normalize_targets(args.to)
+    cc_targets = _normalize_targets(args.cc)
+    any_targets = _normalize_targets(args.recipient)
+
+    to_addresses = _recipient_addresses(msg, "toRecipients")
+    cc_addresses = _recipient_addresses(msg, "ccRecipients")
+    to_names = _recipient_names(msg, "toRecipients")
+    cc_names = _recipient_names(msg, "ccRecipients")
+
+    if not _target_matches(to_targets, to_addresses, to_names):
+        return False
+    if not _target_matches(cc_targets, cc_addresses, cc_names):
+        return False
+    if any_targets and not _target_matches(any_targets, to_addresses | cc_addresses, to_names | cc_names):
+        return False
+    return True
+
+
 def _fetch_body(mailbox: str, msg_id: str) -> str:
     try:
         data = _graph_get(f"{mailbox}/messages/{msg_id}?$select=body")
@@ -223,11 +317,24 @@ def search_messages(args: argparse.Namespace) -> list[dict]:
     params = _build_params(args)
     path = f"{mailbox}/mailFolders/{folder}/messages?{urllib.parse.urlencode(params)}"
 
-    data = _graph_get(path)
-    messages = [
-        msg for msg in data.get("value", [])
-        if _query_matches(msg, args.query if params.get("$search") is None else None)
-    ][:args.top]
+    messages: list[dict] = []
+    scanned = 0
+    next_path: str | None = path
+    while next_path and scanned < args.scan and len(messages) < args.top:
+        data = _graph_get(next_path)
+        page = data.get("value", [])
+        scanned += len(page)
+        for msg in page:
+            if not _query_matches(msg, args.query if params.get("$search") is None else None):
+                continue
+            if not _recipients_match(msg, args):
+                continue
+            messages.append(msg)
+            if len(messages) >= args.top:
+                break
+        next_path = data.get("@odata.nextLink")
+
+    messages = messages[:args.top]
 
     results = []
     for msg in messages:
@@ -242,6 +349,9 @@ def search_messages(args: argparse.Namespace) -> list[dict]:
             "has_attachments": msg.get("hasAttachments", False),
             "preview": msg.get("bodyPreview", ""),
         }
+        if args.to or args.cc or args.recipient:
+            item["to"] = sorted(_recipient_addresses(msg, "toRecipients"))
+            item["cc"] = sorted(_recipient_addresses(msg, "ccRecipients"))
         if args.body:
             item["body"] = _fetch_body(mailbox, item["id"])
         results.append(item)
@@ -254,9 +364,15 @@ def main() -> int:
         description="Search Outlook mailbox via Microsoft Graph API"
     )
     parser.add_argument("--query", help="Free-text keyword search (KQL)")
-    parser.add_argument("--subject", help="Subject contains this text (KQL subject: field)")
+    parser.add_argument("--subject", help="Subject contains this text")
     parser.add_argument("--from", dest="sender", metavar="EMAIL",
                         help="Filter by sender email address (exact match)")
+    parser.add_argument("--to", action="append", default=[], metavar="EMAIL_OR_NAME",
+                        help="Locally filter messages where To contains this address or display name")
+    parser.add_argument("--cc", action="append", default=[], metavar="EMAIL_OR_NAME",
+                        help="Locally filter messages where Cc contains this address or display name")
+    parser.add_argument("--recipient", action="append", default=[], metavar="EMAIL_OR_NAME",
+                        help="Locally filter messages where To or Cc contains this address or display name")
     parser.add_argument("--since", metavar="DATE",
                         help="Messages after this date (YYYY-MM-DD, or relative: 7d, 2w, 1m)")
     parser.add_argument("--until", metavar="DATE",
@@ -269,17 +385,31 @@ def main() -> int:
                               "target/agent searches the agent polling mailbox"))
     parser.add_argument("--top", type=int, default=20,
                         help="Max results to return (default 20, max 50)")
+    parser.add_argument("--scan", type=int, default=200,
+                        help="Max recent messages to scan when local filters are needed (default 200)")
     parser.add_argument("--unread", action="store_true",
                         help="Return only unread messages")
     parser.add_argument("--body", action="store_true",
                         help="Fetch full body text for each message (slower; fetches individually)")
     args = parser.parse_args()
 
-    if not any([args.query, args.subject, args.sender, args.since, args.until, args.unread]):
+    if args.top < 1 or args.top > 50:
+        print(json.dumps({
+            "ok": False,
+            "error": "invalid_argument",
+            "message": "--top must be between 1 and 50",
+        }))
+        return 1
+
+    if args.scan < args.top:
+        args.scan = args.top
+
+    if not any([args.query, args.subject, args.sender, args.to, args.cc, args.recipient,
+                args.since, args.until, args.unread]):
         print(json.dumps({
             "ok": False,
             "error": "no_criteria",
-            "message": "Provide at least one of: --query, --subject, --from, --since, --until, --unread",
+            "message": "Provide at least one of: --query, --subject, --from, --to, --cc, --recipient, --since, --until, --unread",
         }))
         return 1
 

@@ -853,6 +853,15 @@ function writeSandboxConfigSyncFile(script) {
 function encodeDockerJsonArg(value) {
     return Buffer.from(JSON.stringify(value || {}), "utf8").toString("base64");
 }
+function encodeDockerEnvArg(value, name) {
+    const trimmed = String(value || "").trim();
+    if (!trimmed)
+        return "";
+    if (!/^[A-Za-z0-9@._,+:-]+$/.test(trimmed)) {
+        throw new Error(`${name} contains characters that are unsafe for a Docker ARG`);
+    }
+    return trimmed;
+}
 function isAffirmativeAnswer(value) {
     return ["y", "yes"].includes(String(value || "")
         .trim()
@@ -1345,6 +1354,12 @@ function patchStagedDockerfile(dockerfilePath, model, chatUiUrl, buildId = Strin
     }
     if (Object.keys(messagingAllowedIds).length > 0) {
         dockerfile = dockerfile.replace(/^ARG NEMOCLAW_MESSAGING_ALLOWED_IDS_B64=.*$/m, `ARG NEMOCLAW_MESSAGING_ALLOWED_IDS_B64=${encodeDockerJsonArg(messagingAllowedIds)}`);
+    }
+    for (const key of ["OUTLOOK_TARGET_MAILBOX", "OUTLOOK_REPLY_TO", "OUTLOOK_ALLOWED_SENDERS"]) {
+        const value = getCredential(key) || process.env[key];
+        if (value) {
+            dockerfile = dockerfile.replace(new RegExp(`^ARG ${key}=.*$`, "m"), `ARG ${key}=${encodeDockerEnvArg(value, key)}`);
+        }
     }
     const sourceEtlBuildArgs = [
         "SOURCE_ETL_GITHUB_REPO",
