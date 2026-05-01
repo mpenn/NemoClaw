@@ -391,14 +391,19 @@ This brings up four containers:
 
 ### Docker network requirement
 
-The `postgrest` container must be reachable from the OpenShell L7 proxy on the
-gateway cluster network. The `docker-compose.yml` declares an external network
-named by `SOURCE_ETL_OPENSHELL_NETWORK`, defaulting to
+The unified extras stack includes Phoenix, the Outlook token manager, Postgres,
+ETLs, and PostgREST. PostGREST must be reachable from the OpenShell L7 proxy on
+the gateway cluster network, so `extras/docker-compose.yml` declares an external
+network named by `SOURCE_ETL_OPENSHELL_NETWORK`, defaulting to
 `openshell-cluster-nemoclaw`, and attaches `postgrest` to it automatically.
 
-This network is created by the OpenShell gateway when the sandbox is first started.
-**Run onboard before `docker compose up`**, or the external network will not exist
-yet and compose will fail.
+That external network is created by the OpenShell gateway when the sandbox is
+first started. Because Docker Compose validates the external network before
+starting the stack, **the unified extras stack cannot be started on a fresh host
+until after an initial onboard has created the OpenShell gateway network**.
+This also means the Outlook token manager in the unified extras stack is not
+available for the very first Outlook authentication attempt. Use the fresh-host
+ordering in [8. Run Onboard, Start ETLs, and Apply Policy](#8-run-onboard-start-etls-and-apply-policy).
 
 The Hermes sandbox policy set for this path is intentionally narrow:
 
@@ -481,6 +486,15 @@ user via Microsoft Entra ID and caches a refresh token in `sessions.json`. This
 happens once interactively during onboard; subsequent non-interactive onboards
 reuse the saved session.
 
+On a fresh host, there is one ordering wrinkle: the Outlook token manager is part
+of the unified extras stack, but that stack needs the OpenShell gateway Docker
+network that onboard creates. If you have not created the sandbox before, do the
+first onboard pass with Outlook deselected or with `OUTLOOK_CLIENT_ID` and
+`OUTLOOK_TENANT_ID` temporarily unset. That first pass creates the OpenShell
+gateway network. Then start the extras stack and rerun onboard with Outlook
+enabled so the token manager can complete delegated auth and the final sandbox
+image gets the Outlook bridge configuration.
+
 ### 7a. Forward port 51247 before running onboard
 
 The token manager's OAuth redirect callback listens on port 51247. When you
@@ -510,6 +524,23 @@ You can close the forward after onboard completes and the session UUID is saved.
 
 ## 8. Run Onboard, Start ETLs, and Apply Policy
 
+Fresh hosts need two passes when Outlook is enabled:
+
+1. Run onboard once to create the OpenShell gateway network. Leave Outlook
+   deselected in the messaging prompt, or temporarily unset `OUTLOOK_CLIENT_ID`
+   and `OUTLOOK_TENANT_ID` before this first pass.
+2. Start the unified extras stack. This starts the Outlook token manager on the
+   host, along with Phoenix, Postgres, ETLs, and PostGREST.
+3. Rerun `nemoclaw onboard --recreate-sandbox` with Outlook enabled. This pass
+   authenticates with the token manager, saves `OUTLOOK_SESSION_UUID`, rebuilds
+   the sandbox image with Outlook bridge settings, and attaches the Outlook
+   provider.
+4. Apply the generated network policy after the extras stack is running.
+
+If the OpenShell gateway network already exists, `OUTLOOK_SESSION_UUID` already
+exists, and the token manager cache is still valid, you can skip the first-pass
+workaround and run the final onboard directly after starting the extras stack.
+
 ### 8a. Run onboard
 
 Source `.env` before running. The NemoClaw CLI reads all configuration from
@@ -520,6 +551,13 @@ so variables are exported to child processes.
 set -a && source .env && set +a
 export NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE=1
 nemoclaw onboard
+```
+
+For the first fresh-host pass, if Outlook variables are already present in
+`.env`, either press `4` in the messaging selector to deselect Outlook or run:
+
+```bash
+env -u OUTLOOK_CLIENT_ID -u OUTLOOK_TENANT_ID nemoclaw onboard
 ```
 
 This will:
@@ -572,6 +610,16 @@ docker compose -f extras/docker-compose.yml ps
 
 This starts the first 72-hour backfill immediately. The GitHub and forum ETLs
 then refresh hourly.
+
+If this is the first fresh-host setup and the first onboard pass skipped Outlook,
+rerun onboard now with Outlook enabled so delegated auth can talk to the running
+token manager:
+
+```bash
+set -a && source .env && set +a
+export NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE=1
+nemoclaw onboard --recreate-sandbox
+```
 
 ### 8c. Update and apply the network policy
 
