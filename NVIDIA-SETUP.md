@@ -243,12 +243,15 @@ The sandbox only responds to users on the allowlist.
 ## 3. Get Your NVIDIA API Key
 
 NemoClaw uses a compatible OpenAI-style endpoint for the agent's LLM. The default
-template is wired to the NVIDIA integrate endpoint.
+template is wired through a small host-side proxy to NVIDIA's inference API. The
+proxy avoids a local TLS/DNS edge case where the host resolves the NVIDIA endpoint
+to `127.0.0.1`, which is not the same loopback interface from inside OpenShell's
+Kubernetes gateway.
 
 1. Go to [build.nvidia.com](https://build.nvidia.com) and sign in with your NVIDIA
    account.
 2. Navigate to any model page and click **Get API Key**.
-3. Copy the key. It starts with `nvapi-`.
+3. Copy the key. Depending on the backend, it may start with `nvapi-` or `sk-`.
 
 ---
 
@@ -267,11 +270,11 @@ live in that mirror rather than being fetched live from the sandbox.
 ```ini
 NEMOCLAW_AGENT=hermes
 NEMOCLAW_PROVIDER=compatible-endpoint
-NEMOCLAW_ENDPOINT_URL=https://integrate.api.nvidia.com/v1
-COMPATIBLE_API_KEY=nvapi-<your key from build.nvidia.com>
-NEMOCLAW_PROVIDER_KEY=nvapi-<same key as above>
-# NVIDIA_API_KEY=nvapi-<optional legacy variable; not used by this guide's compatible-endpoint flow>
-NEMOCLAW_MODEL=qwen/qwen3-next-80b-a3b-instruct
+NEMOCLAW_ENDPOINT_URL=http://172.17.0.1:18080/v1
+COMPATIBLE_API_KEY=<your NVIDIA inference API key>
+NEMOCLAW_PROVIDER_KEY=<same key as above>
+# NVIDIA_API_KEY=<optional legacy variable; not used by this guide's compatible-endpoint flow>
+NEMOCLAW_MODEL=nvidia/nvidia/nemotron-3-super-120b-long-ctx
 NEMOCLAW_POLICY_MODE=custom
 
 SLACK_BOT_TOKEN=xoxb-<your bot token from OAuth & Permissions>
@@ -335,6 +338,20 @@ PHOENIX_COLLECTOR_ENDPOINT=http://172.17.0.1:6006/v1/traces
 > from older or different inference flows. For this Hermes guide, the active path is
 > `compatible-endpoint`, so `COMPATIBLE_API_KEY` and `NEMOCLAW_PROVIDER_KEY` are the
 > variables that matter.
+
+Start the host-side NVIDIA inference proxy before smoke-testing or onboarding:
+
+```bash
+mkdir -p .tmp
+setsid -f scripts/nvidia-inference-host-proxy.py \
+  --listen 0.0.0.0 \
+  --port 18080 \
+  > .tmp/nvidia-inference-host-proxy.log 2>&1 < /dev/null
+```
+
+The proxy listens on the Docker host gateway address used by OpenShell
+(`172.17.0.1` in the default local setup) and forwards to
+`https://inference-api.nvidia.com`. Keep it running while the sandbox is running.
 
 Smoke-test the compatible endpoint before building the sandbox:
 
