@@ -25,34 +25,85 @@ containers scrape those sources on a schedule and write results into Postgres.
 The sandbox queries that mirror through a read-only PostgREST HTTP bridge.
 
 ```mermaid
-flowchart TB
-    subgraph sandbox["OpenShell Sandbox"]
-        agent["Hermes Agent\n(LLM + Skills)"]
-    end
+flowchart LR
+      subgraph host["Host Machine"]
+          direction TB
 
-    nvidia_inference(["NVIDIA API Catalog\ncompatible endpoint"])
-    slack(["Slack"])
-    outlook(["Outlook\n(MS Graph)"])
+          subgraph sandbox["OpenShell Sandbox"]
+              agent["Hermes Agent\nLLM + NemoFlow"]
+              outlookBridge["Outlook Bridge"]
+              credSidecar["Credential Sidecar\n127.0.0.1:8766"]
 
-    subgraph host["Host Machine  ·  source-etls/docker-compose.yml"]
-        postgrest["PostgREST\n(read-only REST bridge · :3100)"]
-        postgres[("PostgreSQL\n(:5432)")]
-        github_etl["github-etl\n(scheduled · hourly · deterministic)"]
-        forums_etl["forums-etl\n(scheduled · hourly · deterministic)"]
-    end
+              subgraph sourceSkills["Source Skills"]
+                  direction LR
+                  s1["source-etl-query"]
+                  s2["github-interactions"]
+                  s3["nvidia-forum-search"]
+                  s4["cross-source-gap-analysis"]
+              end
 
-    github_api(["GitHub API\n(issues · PRs · discussions)"])
-    nvidia_forums(["NVIDIA Developer Forums\n(Discourse)"])
+              subgraph slackSkills["Slack Skills"]
+                  direction LR
+                  k1["slack-channel-finder"]
+                  k2["slack-channel-summarizer"]
+              end
 
-    agent -->|"LLM inference  ·  nvidia policy"| nvidia_inference
-    agent -->|"Slack Web API  ·  slack policy"| slack
-    agent -->|"MS Graph API  ·  outlook policy"| outlook
-    agent -->|"HTTP REST  ·  source-etls policy"| postgrest
-    postgrest --> postgres
-    github_etl -->|"write  (app_user)"| postgres
-    forums_etl -->|"write  (app_user)"| postgres
-    github_etl -->|"scheduled scrape"| github_api
-    forums_etl -->|"scheduled scrape"| nvidia_forums
+              subgraph outlookSkills["Outlook Skills"]
+                  direction LR
+                  o1["outlook-email-search"]
+              end
+
+              agent --> sourceSkills
+              agent --> slackSkills
+              agent -->|"messaging channel"| outlookBridge
+              agent --> outlookSkills
+              agent -->|"OTLP traces"| proxy
+              sourceSkills -->|"HTTP REST"| postgrest
+              slackSkills -->|"comms + research"| proxy
+              outlookSkills --> credSidecar
+              outlookBridge --> credSidecar
+          end
+
+          proxy["L7 Proxy"]
+          phoenix["Phoenix Telemetry\n:6006"]
+          postgrest["PostgREST\nread-only :3100"]
+          postgres[("PostgreSQL\nsource mirror")]
+          etls["Source ETLs\nGitHub + Forums\nhourly deltas"]
+          tokenManager["Token Manager\nMSAL sessions\n:8765"]
+
+          proxy -->|"OTLP traces"| phoenix
+          postgrest --> postgres
+          etls -->|"write deltas"| postgres
+          credSidecar -->|"fetch live token\nsession UUID"| tokenManager
+          credSidecar -->|"Graph API\nHTTPS via L7 proxy"| proxy
+      end
+
+      nvidia["NVIDIA Internal\nAPI Catalog\nLLM inference"]
+      slack["NVIDIA Internal\nSlack\nBot App"]
+      outlook["NVIDIA Internal\nOutlook / MS Graph\nagt-username@nvidia.com"]
+      entra["NVIDIA Entra ID\nOAuth / device code"]
+      github["External\nGitHub API\nissues · PRs · discussions"]
+      forums["External\nNVIDIA Forums\nnemoclaw tag"]
+
+      agent -->|"inference"| nvidia
+      proxy -->|"Slack bot"| slack
+      proxy -->|"Graph API"| outlook
+      tokenManager -->|"MSAL auth"| entra
+      entra -.->|"issues token"| tokenManager
+      etls -->|"scheduled scrape"| github
+      etls -->|"scheduled scrape"| forums
+
+      style host fill:#f7f6ef,stroke:#8a8068,stroke-width:2px
+      style sandbox fill:#e7f0ff,stroke:#2b5fab,stroke-width:3px
+      style sourceSkills fill:#f0f4ff,stroke:#7090cc,stroke-width:1px
+      style slackSkills fill:#f0f4ff,stroke:#7090cc,stroke-width:1px
+      style outlookSkills fill:#f0f4ff,stroke:#7090cc,stroke-width:1px
+
+      classDef internal fill:#eef7e9,stroke:#6aa84f,stroke-width:2px
+      classDef external fill:#fce5cd,stroke:#e69138,stroke-width:2px
+
+      class nvidia,slack,outlook,entra internal
+      class github,forums external
 ```
 
 **Key points:**
@@ -246,15 +297,14 @@ SOURCE_ETL_OPENSHELL_NETWORK=openshell-cluster-nemoclaw
 
 OUTLOOK_TENANT_ID=<Microsoft tenant id>
 OUTLOOK_CLIENT_ID=<Microsoft app client id>
-OUTLOOK_CLIENT_SECRET=<Microsoft app client secret>
-OUTLOOK_BOT_MAILBOX=<shared mailbox the bridge monitors>
-OUTLOOK_USER_MAILBOX=<your mailbox used for scheduled-job replies>
+OUTLOOK_TARGET_MAILBOX=<mailbox the bridge monitors, e.g. hermes@yourorg.com>
+OUTLOOK_REPLY_TO=<reply-to address for outbound emails>
+OUTLOOK_SESSION_UUID=<populated automatically by nemoclaw onboard; set manually for CI>
 
 NEMOCLAW_SANDBOX_NAME=nemoclaw-hermes
 NEMOCLAW_POLICY_PRESETS=slack,outlook,postgres
 
-# Optional Phoenix telemetry endpoint. Leave unset unless you are enabling Phoenix.
-# PHOENIX_COLLECTOR_ENDPOINT=http://172.17.0.1:6006/v1/traces
+PHOENIX_COLLECTOR_ENDPOINT=http://172.17.0.1:6006/v1/traces
 ```
 
 > **Note on `SLACK_ALLOWED_IDS`:** Only the user IDs listed here can message the bot.
@@ -357,21 +407,20 @@ This step is optional. Skip it if you do not need trace-level observability.
 
 ### 6a. Start Phoenix
 
-In a separate terminal, pull and run the Phoenix container:
+Phoenix is included in the unified `extras/docker-compose.yml` stack. It starts
+automatically when you bring up the extras stack in step 7b — no separate container
+run is needed.
 
-```bash
-docker pull arizephoenix/phoenix:latest
-docker run --rm -p 6006:6006 -p 4317:4317 arizephoenix/phoenix:latest
-```
-
-Phoenix exposes two ports:
+Phoenix exposes three ports:
 
 - `6006` for the web UI and OTLP/HTTP trace ingestion at `/v1/traces`
 - `4317` for OTLP/gRPC trace ingestion
+- `4318` for OTLP/HTTP trace ingestion
 
 ### 6b. Configure NemoClaw to Send Traces
 
-Add the following to `.env` before onboarding:
+`PHOENIX_COLLECTOR_ENDPOINT` is already included in `env.template`. Verify it is
+set in your `.env`:
 
 ```ini
 PHOENIX_COLLECTOR_ENDPOINT=http://172.17.0.1:6006/v1/traces
@@ -464,15 +513,12 @@ nemoclaw nemoclaw-hermes rebuild --yes
 
 ### 7b. Start the host-side source ETLs
 
-After onboard has created the OpenShell gateway network, start the host-side ETL
-stack:
+After onboard has created the OpenShell gateway network, start the unified extras
+stack (Phoenix, Outlook token manager, Postgres, ETLs, PostgREST):
 
 ```bash
-set -a && source .env && set +a
-cd source-etls
-docker compose up -d --build
-docker compose ps
-cd ..
+docker compose -f extras/docker-compose.yml --env-file .env up -d --build
+docker compose -f extras/docker-compose.yml ps
 ```
 
 This starts the first 72-hour backfill immediately. The GitHub and forum ETLs
@@ -561,7 +607,7 @@ resolved source-etls PostgREST endpoint. It should not include
 | Preset | What it opens | Notes |
 |--------|--------------|-------|
 | `slack` | `slack.com`, `api.slack.com`, `hooks.slack.com`, Socket Mode WebSocket | Required — Slack is a live interaction and research channel |
-| `outlook` | `graph.microsoft.com`, `login.microsoftonline.com` | Required — Outlook mailbox monitoring and replies |
+| `outlook` | `graph.microsoft.com` (via credential sidecar), Outlook token manager on host | Required — Outlook mailbox monitoring and replies via delegated auth |
 | `postgres` | Source-etls PostgREST bridge | Required — gives the sandbox access to the read-only source-etls REST bridge |
 
 The `github` and `nvidia-forum` presets exist in `nemoclaw-blueprint/policies/presets/`

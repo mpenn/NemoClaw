@@ -75,12 +75,26 @@ network_policies:
     endpoints:
     - host: graph.microsoft.com
       port: 443
-      access: full
-    - host: login.microsoftonline.com
-      port: 443
-      access: full
+      protocol: rest
+      enforcement: enforce
+      rules:
+      - allow: { method: GET, path: "/**" }
+      - allow: { method: POST, path: "/**" }
+      - allow: { method: PATCH, path: "/**" }
+    - host: 172.17.0.1
+      port: 8765
+      protocol: http
+      enforcement: enforce
+      rules:
+      - allow: { method: GET, path: /token }
+    - host: host.docker.internal
+      port: 8765
+      protocol: http
+      enforcement: enforce
+      rules:
+      - allow: { method: GET, path: /token }
     binaries:
-    - path: /usr/bin/python3.11
+    - path: /usr/local/bin/outlook-credential-sidecar
 __OPTIONAL_PHOENIX_POLICY__
   postgres:
     name: postgres

@@ -1134,6 +1134,58 @@ async function configurePhoenixCollector(agent) {
   return endpoint || null;
 }
 
+async function applyPhoenixEgressPolicy(sandboxName) {
+  const phoenixEndpoint =
+    getCredential(PHOENIX_COLLECTOR_ENDPOINT_ENV) ||
+    process.env[PHOENIX_COLLECTOR_ENDPOINT_ENV];
+  if (!phoenixEndpoint) return;
+
+  let phoenixHost;
+  let phoenixPort;
+  try {
+    const u = new URL(phoenixEndpoint);
+    phoenixHost = u.hostname;
+    phoenixPort = parseInt(u.port || "4318", 10);
+  } catch {
+    console.warn(`  Warning: ${PHOENIX_COLLECTOR_ENDPOINT_ENV} is not a valid URL — skipping egress rule`);
+    return;
+  }
+
+  const presetEntries = [
+    "  phoenix_collector:",
+    "    name: phoenix_collector",
+    "    endpoints:",
+    `      - host: ${phoenixHost}`,
+    `        port: ${phoenixPort}`,
+    "        protocol: rest",
+    "        enforcement: enforce",
+    "        rules:",
+    '          - allow: { method: POST, path: "/**" }',
+    "    binaries:",
+    "      - { path: /usr/bin/python3.11 }",
+  ].join("\n");
+
+  let rawPolicy = "";
+  try {
+    rawPolicy = runCapture(policies.buildPolicyGetCommand(sandboxName), { ignoreError: true });
+  } catch {
+    /* use empty baseline */
+  }
+  const currentPolicy = policies.parseCurrentPolicy(rawPolicy);
+  const merged = policies.mergePresetIntoPolicy(currentPolicy, presetEntries);
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-policy-"));
+  const tmpFile = path.join(tmpDir, "policy.yaml");
+  fs.writeFileSync(tmpFile, merged, { encoding: "utf-8", mode: 0o600 });
+  try {
+    run(policies.buildPolicySetCommand(tmpFile, sandboxName));
+    console.log(`  ✓ Phoenix OTLP egress enabled (${phoenixHost}:${phoenixPort})`);
+  } finally {
+    try { fs.unlinkSync(tmpFile); } catch { /* ignored */ }
+    try { fs.rmdirSync(tmpDir); } catch { /* ignored */ }
+  }
+}
+
 /**
  * Prompt for (or read) the Outlook token manager host, then ensure the
  * Outlook app is authenticated. If no cached session exists, drives the
@@ -1141,7 +1193,7 @@ async function configurePhoenixCollector(agent) {
  * /auth/poll until complete. This bootstraps the MSAL cache so the
  * credential sidecar can acquire tokens immediately on sandbox start.
  */
-async function configureOutlookTokenManager(agent, hasOutlook: boolean, sandboxName: string) {
+async function configureOutlookTokenManager(agent, hasOutlook: boolean) {
   if (!agent || agent.name !== "hermes" || !hasOutlook) return null;
 
   if (isNonInteractive()) {
@@ -1150,7 +1202,28 @@ async function configureOutlookTokenManager(agent, hasOutlook: boolean, sandboxN
       saveCredential(TOKEN_MANAGER_HOST_ENV, host);
       process.env[TOKEN_MANAGER_HOST_ENV] = host;
     }
-    return getCredential(TOKEN_MANAGER_HOST_ENV) || process.env[TOKEN_MANAGER_HOST_ENV] || "host.docker.internal";
+    const resolvedHost = getCredential(TOKEN_MANAGER_HOST_ENV) || process.env[TOKEN_MANAGER_HOST_ENV] || "host.docker.internal";
+    const localHost = normalizeCredentialValue(process.env.TOKEN_MANAGER_LOCAL_HOST) || "localhost";
+    const tmBase = `http://${localHost}:${TOKEN_MANAGER_PORT_DEFAULT}`;
+    const envSessionId = normalizeCredentialValue(process.env.OUTLOOK_SESSION_UUID);
+    if (envSessionId) saveCredential("OUTLOOK_SESSION_UUID", envSessionId);
+    const savedSessionId = getCredential("OUTLOOK_SESSION_UUID") || envSessionId;
+    if (!savedSessionId) {
+      console.error("  ✗ Outlook: no session UUID found — set OUTLOOK_SESSION_UUID env var or run nemoclaw onboard (interactive) to authenticate.");
+      process.exit(1);
+    }
+    const sessionCheck = runCurlProbe([
+      "-sf", "--max-time", "10",
+      "-H", `X-Session-Id: ${savedSessionId}`,
+      `${tmBase}/token`,
+    ]);
+    if (!sessionCheck.ok) {
+      console.error("  ✗ Outlook: session is not valid (token manager unreachable or session expired).");
+      console.error("    Check token manager logs, then re-run nemoclaw onboard (interactive) to re-authenticate.");
+      process.exit(1);
+    }
+    console.log("  ✓ Outlook session active");
+    return resolvedHost;
   }
 
   const saved = getCredential(TOKEN_MANAGER_HOST_ENV) || normalizeCredentialValue(process.env[TOKEN_MANAGER_HOST_ENV]);
@@ -1193,7 +1266,6 @@ async function configureOutlookTokenManager(agent, hasOutlook: boolean, sandboxN
     ]);
     if (sessionCheck.ok) {
       saveCredential("OUTLOOK_SESSION_UUID", savedSessionId);
-      upsertProvider(`${sandboxName}-outlook-session`, "generic", "OUTLOOK_SESSION_UUID", null, { "OUTLOOK_SESSION_UUID": savedSessionId });
       console.log("  ✓ Outlook session active");
       return host;
     }
@@ -1225,7 +1297,6 @@ async function configureOutlookTokenManager(agent, hasOutlook: boolean, sandboxN
   // Token manager returned an existing authenticated session (deduplication).
   if (startData.status === "already_authenticated" && startData.session_id) {
     saveCredential("OUTLOOK_SESSION_UUID", startData.session_id);
-    upsertProvider(`${sandboxName}-outlook-session`, "generic", "OUTLOOK_SESSION_UUID", null, { "OUTLOOK_SESSION_UUID": startData.session_id });
     console.log("  ✓ Outlook session active");
     return host;
   }
@@ -1266,7 +1337,6 @@ async function configureOutlookTokenManager(agent, hasOutlook: boolean, sandboxN
     if (pollData.status === "complete") {
       process.stdout.write("\n");
       saveCredential("OUTLOOK_SESSION_UUID", sessionId);
-      upsertProvider(`${sandboxName}-outlook-session`, "generic", "OUTLOOK_SESSION_UUID", null, { "OUTLOOK_SESSION_UUID": sessionId });
       console.log("  ✓ Outlook authentication complete");
       return host;
     }
@@ -3421,12 +3491,13 @@ async function createSandbox(
     createArgs.push("--provider", p);
   }
 
-  // Attach the Outlook session UUID provider if it was registered during
-  // onboarding. This is separate from messagingTokenDefs because the UUID is
-  // always passed by provider name (not as a token value), regardless of
-  // whether it was freshly created or restored from the credentials store.
-  if (providerExistsInGateway("OUTLOOK_SESSION_UUID")) {
-    createArgs.push("--provider", "OUTLOOK_SESSION_UUID");
+  // Register and attach the Outlook session UUID provider. This happens here
+  // (not in configureOutlookTokenManager) because sandboxName is not yet known
+  // during step 5 when token manager auth runs.
+  const savedOutlookSessionId = getCredential("OUTLOOK_SESSION_UUID") || normalizeCredentialValue(process.env.OUTLOOK_SESSION_UUID);
+  if (savedOutlookSessionId) {
+    upsertProvider(`${sandboxName}-outlook-session`, "generic", "OUTLOOK_SESSION_UUID", null, { "OUTLOOK_SESSION_UUID": savedOutlookSessionId });
+    createArgs.push("--provider", `${sandboxName}-outlook-session`);
   }
 
   // Create a GitHub provider when a token is available. OpenShell's native
@@ -3626,6 +3697,7 @@ async function createSandbox(
       getCredential("OUTLOOK_ALLOWED_SENDERS") || process.env.OUTLOOK_ALLOWED_SENDERS;
     if (outlookAllowedSenders) {
       envArgs.push(formatEnvAssignment("OUTLOOK_ALLOWED_SENDERS", outlookAllowedSenders));
+    }
 
     for (const envKey of [
       "SOURCE_ETL_GITHUB_REPO",
@@ -6381,7 +6453,6 @@ async function onboard(opts = {}) {
       await configureOutlookTokenManager(
         agent,
         selectedMessagingChannels.includes("outlook"),
-        sandboxName,
       );
       sandboxName = await createSandbox(
         gpu,
