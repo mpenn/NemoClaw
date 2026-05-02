@@ -22,11 +22,66 @@ import json
 import logging
 import os
 import pathlib
+import re
 import signal
 import sys
 import time
 
 import httpx
+from markdown_it import MarkdownIt
+
+_md = MarkdownIt().enable("table")
+
+
+def _email_html(text: str) -> str:
+    """Convert a markdown reply to an Outlook-safe HTML email."""
+    body = _md.render(text)
+
+    # Inject inline styles on table elements so Outlook renders them correctly.
+    # <style> blocks work in modern Outlook but table borders require inline styles.
+    body = re.sub(r"<table>", '<table style="border-collapse:collapse;width:100%;margin:12px 0;font-size:13px;">', body)
+    body = re.sub(r"<th>", '<th style="padding:7px 10px;border:1px solid #ddd;background:#f0f0f0;font-weight:600;text-align:left;">', body)
+    body = re.sub(r"<td>", '<td style="padding:7px 10px;border:1px solid #ddd;text-align:left;">', body)
+    body = re.sub(r"<pre>", '<pre style="background:#f4f4f4;padding:12px;border-left:3px solid #bbb;font-family:monospace;font-size:13px;white-space:pre-wrap;margin:10px 0;">', body)
+    body = re.sub(r"<code>", '<code style="background:#f4f4f4;padding:1px 4px;font-family:monospace;border-radius:2px;">', body)
+
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body {{ font-family: Arial, Helvetica, sans-serif; font-size: 14px; color: #1a1a1a; margin: 0; padding: 0; }}
+  p {{ margin: 8px 0; line-height: 1.6; }}
+  ul, ol {{ margin: 6px 0; padding-left: 22px; }}
+  li {{ margin: 3px 0; line-height: 1.5; }}
+  h1 {{ font-size: 22px; margin: 16px 0 8px; }}
+  h2 {{ font-size: 18px; margin: 16px 0 8px; }}
+  h3 {{ font-size: 15px; margin: 12px 0 6px; }}
+  hr {{ border: none; border-top: 1px solid #e0e0e0; margin: 16px 0; }}
+  blockquote {{ margin: 8px 0 8px 16px; padding-left: 12px; border-left: 3px solid #ccc; color: #555; }}
+</style>
+</head>
+<body style="margin:0;padding:0;background:#f5f5f5;">
+<table cellpadding="0" cellspacing="0" width="100%" style="background:#f5f5f5;padding:24px 12px;">
+  <tr><td align="center">
+    <table cellpadding="0" cellspacing="0" width="640"
+           style="background:#ffffff;border:1px solid #e0e0e0;border-radius:4px;">
+      <tr>
+        <td style="padding:32px 40px;color:#1a1a1a;font-size:14px;line-height:1.6;">
+{body}
+        </td>
+      </tr>
+      <tr>
+        <td style="padding:12px 40px;background:#f8f8f8;border-top:1px solid #ebebeb;
+                   font-size:11px;color:#999;text-align:center;">
+          Sent by Hermes &middot; NVIDIA NemoClaw
+        </td>
+      </tr>
+    </table>
+  </td></tr>
+</table>
+</body>
+</html>"""
 
 logging.basicConfig(
     level=logging.INFO,
@@ -93,7 +148,7 @@ HEALTH_URL      = "http://127.0.0.1:18642/health"
 HERMES_API_KEY  = "nemoclaw-internal"
 
 MIN_POLL_INTERVAL      = 5
-MAX_POLL_INTERVAL      = 5
+MAX_POLL_INTERVAL      = 30
 BACKOFF_AFTER          = 3
 MAX_CONCURRENT_MESSAGES = 5  # max simultaneous ask_hermes calls
 
@@ -356,7 +411,7 @@ async def _send_reply(msg_id: str, reply: str) -> None:
     try:
         await graph_post(
             f"{_mailbox_base()}/messages/{msg_id}/reply",
-            {"comment": reply},
+            {"message": {"body": {"contentType": "html", "content": _email_html(reply)}}},
         )
         log.info("Sent reply to message %s", msg_id)
     except Exception:
@@ -451,7 +506,7 @@ async def _run_job(job: dict) -> None:
             {
                 "message": {
                     "subject": subject,
-                    "body": {"contentType": "Text", "content": reply},
+                    "body": {"contentType": "HTML", "content": _email_html(reply)},
                     "toRecipients": [{"emailAddress": {"address": to_address}}],
                 }
             },

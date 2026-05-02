@@ -23,6 +23,8 @@ Usage:
     python3 describe_slack_channel.py --channel-id C0ABCDE1234
     python3 describe_slack_channel.py --channel-id C0ABCDE1234 --no-history
     python3 describe_slack_channel.py --channel-id C0ABCDE1234 --history-limit 100
+    python3 describe_slack_channel.py --channel-id C0ABCDE1234 --replies
+    python3 describe_slack_channel.py --channel-id C0ABCDE1234 --resolve-users
 
 Environment:
     SLACK_BOT_TOKEN must be set. The bot must be a member of private
@@ -47,6 +49,8 @@ from typing import Any
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
+
+
 
 
 SLACK_API_BASE = "https://slack.com/api"
@@ -84,18 +88,24 @@ TOKEN_EXPANSIONS = {
 
 
 def slack_get(method: str, params: dict[str, Any], token: str) -> dict[str, Any]:
-    """Call a Slack Web API GET method and return parsed JSON."""
+    """Call a Slack Web API GET method and return parsed JSON. Retries on 429."""
     url = f"{SLACK_API_BASE}/{method}?{urlencode(params)}"
     req = Request(url, headers={"Authorization": f"Bearer {token}"})
-    try:
-        with urlopen(req, timeout=DEFAULT_TIMEOUT_SECONDS) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except HTTPError as e:
-        return {"ok": False, "error": f"http_{e.code}", "detail": str(e)}
-    except URLError as e:
-        return {"ok": False, "error": "url_error", "detail": str(e)}
-    except json.JSONDecodeError as e:
-        return {"ok": False, "error": "bad_json", "detail": str(e)}
+    for attempt in range(3):
+        try:
+            with urlopen(req, timeout=DEFAULT_TIMEOUT_SECONDS) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except HTTPError as e:
+            if e.code == 429 and attempt < 2:
+                retry_after = min(int(e.headers.get("Retry-After", "1")), 5)
+                time.sleep(retry_after)
+                continue
+            return {"ok": False, "error": f"http_{e.code}", "detail": str(e)}
+        except URLError as e:
+            return {"ok": False, "error": "url_error", "detail": str(e)}
+        except json.JSONDecodeError as e:
+            return {"ok": False, "error": "bad_json", "detail": str(e)}
+    return {"ok": False, "error": "rate_limited"}
 
 
 def tokenize_channel_name(name: str) -> list[str]:
@@ -154,6 +164,56 @@ def get_bookmarks(channel_id: str, token: str) -> list[dict[str, Any]]:
             }
         )
     return bookmarks
+
+
+def resolve_user_ids(
+    user_ids: list[str], token: str
+) -> dict[str, str]:
+    """Return a dict of {user_id: display_name} for the given IDs."""
+    resolved: dict[str, str] = {}
+    for uid in user_ids:
+        resp = slack_get("users.info", {"user": uid}, token)
+        if not resp.get("ok"):
+            resolved[uid] = uid
+            continue
+        user = resp.get("user", {})
+        profile = user.get("profile") or {}
+        name = (
+            profile.get("display_name")
+            or profile.get("real_name")
+            or user.get("real_name")
+            or user.get("name")
+            or uid
+        )
+        resolved[uid] = name
+    return resolved
+
+
+def get_thread_replies(
+    channel_id: str, ts: str, token: str, limit: int = 5
+) -> list[dict[str, Any]]:
+    """Fetch the first `limit` replies for a thread (excluding the root message)."""
+    resp = slack_get(
+        "conversations.replies",
+        {"channel": channel_id, "ts": ts, "limit": str(limit + 1)},
+        token,
+    )
+    if not resp.get("ok"):
+        return []
+    messages = resp.get("messages", [])
+    # First message is the root; return only actual replies
+    replies: list[dict[str, Any]] = []
+    for msg in messages[1:]:
+        text = msg.get("text") or ""
+        if not text.strip():
+            continue
+        replies.append({
+            "user": msg.get("user") or msg.get("bot_id", ""),
+            "is_bot": bool(msg.get("bot_id")),
+            "text": text[:500],
+            "ts": msg.get("ts"),
+        })
+    return replies
 
 
 def get_recent_human_messages(
@@ -233,6 +293,7 @@ def build_result(
     pins: list[dict[str, Any]],
     bookmarks: list[dict[str, Any]],
     messages: list[dict[str, Any]],
+    user_map: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Assemble the structured result for the caller."""
     channel = info.get("channel", {}) if info.get("ok") else {}
@@ -244,7 +305,16 @@ def build_result(
     is_private = channel.get("is_private", False)
     num_members = channel.get("num_members")
 
-    contributors = top_contributors(messages) if messages else []
+    contributors_raw = top_contributors(messages) if messages else []
+    # Enrich contributors with display names if a user_map was supplied
+    contributors: list[dict[str, Any]] = []
+    for c in contributors_raw:
+        uid = c["user_id"]
+        entry: dict[str, Any] = {"user_id": uid, "message_count": c["message_count"]}
+        if user_map and uid in user_map:
+            entry["display_name"] = user_map[uid]
+        contributors.append(entry)
+
     name_tokens = tokenize_channel_name(name)
 
     confidence_signals = sum(
@@ -286,6 +356,7 @@ def build_result(
     }
 
 
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -314,6 +385,23 @@ def main() -> int:
         action="store_true",
         help="Skip the bookmarks.list call",
     )
+    parser.add_argument(
+        "--replies",
+        action="store_true",
+        help="For messages with reply_count > 0, fetch the first few thread replies "
+             "and include them as thread_messages on each message",
+    )
+    parser.add_argument(
+        "--replies-limit",
+        type=int,
+        default=5,
+        help="Max replies to fetch per thread when --replies is set (default 5)",
+    )
+    parser.add_argument(
+        "--resolve-users",
+        action="store_true",
+        help="Resolve contributor user IDs to display names via users.info",
+    )
     args = parser.parse_args()
 
     token = os.environ.get("SLACK_BOT_TOKEN")
@@ -335,7 +423,21 @@ def main() -> int:
         else get_recent_human_messages(args.channel_id, token, args.history_limit)
     )
 
-    result = build_result(args.channel_id, info, pins, bookmarks, messages)
+    # Optionally expand thread replies for high-activity messages
+    if args.replies and messages:
+        for msg in messages:
+            if (msg.get("reply_count") or 0) > 0:
+                msg["thread_messages"] = get_thread_replies(
+                    args.channel_id, msg["ts"], token, args.replies_limit
+                )
+
+    # Optionally resolve user IDs to display names
+    user_map: dict[str, str] | None = None
+    if args.resolve_users and messages:
+        unique_ids = list({m["user"] for m in messages if m.get("user")})
+        user_map = resolve_user_ids(unique_ids, token)
+
+    result = build_result(args.channel_id, info, pins, bookmarks, messages, user_map)
     print(json.dumps(result, indent=2))
     return 0
 

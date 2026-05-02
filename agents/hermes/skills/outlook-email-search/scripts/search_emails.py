@@ -49,6 +49,21 @@ def _mailbox() -> str:
     return "me"
 
 
+def _internal_domains() -> set[str]:
+    """Return the set of domains considered 'internal' (derived from mailbox env vars)."""
+    domains: set[str] = set()
+    for env_key in ("OUTLOOK_REPLY_TO", "OUTLOOK_TARGET_MAILBOX"):
+        raw = os.environ.get(env_key, "").strip()
+        if "@" in raw and not raw.startswith("openshell:"):
+            domains.add(raw.split("@")[-1].lower())
+    return domains or {"nvidia.com"}
+
+
+def _sender_domain(msg: dict) -> str:
+    addr = msg.get("from", {}).get("emailAddress", {}).get("address", "")
+    return addr.split("@")[-1].lower() if "@" in addr else ""
+
+
 def _graph_get(path: str) -> dict:
     url = f"{_graph_base()}/{path.lstrip('/')}"
     req = urllib.request.Request(
@@ -126,9 +141,13 @@ def _build_params(args: argparse.Namespace) -> dict[str, str]:
     if args.unread:
         filters.append("isRead eq false")
 
+    # When domain filtering is active, over-fetch so we have enough after client-side filtering.
+    domain_filtering = args.external_only or args.domain or args.domain_not
+    fetch_top = 50 if domain_filtering else min(args.top, 50)
+
     params: dict[str, str] = {
-        "$select": "id,subject,from,receivedDateTime,isRead,hasAttachments,bodyPreview",
-        "$top": str(min(args.top, 50)),
+        "$select": "id,subject,from,receivedDateTime,isRead,hasAttachments,bodyPreview,conversationId",
+        "$top": str(fetch_top),
     }
 
     if search_terms:
@@ -143,6 +162,24 @@ def _build_params(args: argparse.Namespace) -> dict[str, str]:
     return params
 
 
+def _fetch_pages(path: str, max_pages: int) -> list[dict]:
+    """Fetch up to max_pages pages of results, following @odata.nextLink."""
+    messages: list[dict] = []
+    data = _graph_get(path)
+    messages.extend(data.get("value", []))
+    page = 1
+    while page < max_pages:
+        next_link = data.get("@odata.nextLink", "")
+        if not next_link:
+            break
+        # nextLink is a full URL; strip the base so _graph_get re-prefixes correctly
+        next_path = next_link.split("/v1.0/", 1)[-1]
+        data = _graph_get(next_path)
+        messages.extend(data.get("value", []))
+        page += 1
+    return messages
+
+
 def _fetch_body(mailbox: str, msg_id: str) -> str:
     try:
         data = _graph_get(f"{mailbox}/messages/{msg_id}?$select=body")
@@ -155,17 +192,40 @@ def _fetch_body(mailbox: str, msg_id: str) -> str:
         return f"(error fetching body: {exc})"
 
 
+def _apply_domain_filters(messages: list[dict], args: argparse.Namespace) -> list[dict]:
+    """Client-side domain filtering (Graph OData does not support domain-level filtering)."""
+    if not (args.external_only or args.domain or args.domain_not):
+        return messages
+
+    internal = _internal_domains()
+    result = []
+    for msg in messages:
+        domain = _sender_domain(msg)
+        if args.external_only and domain in internal:
+            continue
+        if args.domain and domain != args.domain.lower():
+            continue
+        for excluded in (args.domain_not or []):
+            if domain == excluded.lower():
+                break
+        else:
+            result.append(msg)
+    return result
+
+
 def search_messages(args: argparse.Namespace) -> list[dict]:
     mailbox = _mailbox()
     folder = _WELL_KNOWN_FOLDERS.get(args.folder.lower(), args.folder)
     params = _build_params(args)
     path = f"{mailbox}/mailFolders/{folder}/messages?{urllib.parse.urlencode(params)}"
 
-    data = _graph_get(path)
-    messages = data.get("value", [])
+    raw = _fetch_pages(path, max_pages=min(args.pages, 5))
+    raw = _apply_domain_filters(raw, args)
+    # Trim to the requested top count after domain filtering
+    raw = raw[: args.top]
 
     results = []
-    for msg in messages:
+    for msg in raw:
         from_addr = msg.get("from", {}).get("emailAddress", {})
         item = {
             "id": msg.get("id"),
@@ -176,6 +236,7 @@ def search_messages(args: argparse.Namespace) -> list[dict]:
             "is_read": msg.get("isRead", False),
             "has_attachments": msg.get("hasAttachments", False),
             "preview": msg.get("bodyPreview", ""),
+            "conversation_id": msg.get("conversationId", ""),
         }
         if args.body:
             item["body"] = _fetch_body(mailbox, item["id"])
@@ -204,13 +265,27 @@ def main() -> int:
                         help="Return only unread messages")
     parser.add_argument("--body", action="store_true",
                         help="Fetch full body text for each message (slower; fetches individually)")
+    parser.add_argument("--external-only", action="store_true",
+                        help="Return only emails from senders outside the internal domain "
+                             "(auto-detected from OUTLOOK_REPLY_TO / OUTLOOK_TARGET_MAILBOX, "
+                             "defaults to nvidia.com)")
+    parser.add_argument("--domain", metavar="DOMAIN",
+                        help="Return only emails from senders at this domain (e.g. partner.com)")
+    parser.add_argument("--domain-not", metavar="DOMAIN", action="append",
+                        help="Exclude emails from senders at this domain (repeatable)")
+    parser.add_argument("--pages", type=int, default=1,
+                        help="Number of Graph API pages to fetch (default 1; each page is up to 50 "
+                             "messages). Max 5. Use with domain filters to get enough results after "
+                             "client-side filtering.")
     args = parser.parse_args()
 
-    if not any([args.query, args.subject, args.sender, args.since, args.until, args.unread]):
+    if not any([args.query, args.subject, args.sender, args.since, args.until, args.unread,
+                args.external_only, args.domain, args.domain_not]):
         print(json.dumps({
             "ok": False,
             "error": "no_criteria",
-            "message": "Provide at least one of: --query, --subject, --from, --since, --until, --unread",
+            "message": "Provide at least one of: --query, --subject, --from, --since, --until, "
+                       "--unread, --external-only, --domain, --domain-not",
         }))
         return 1
 
