@@ -1,6 +1,6 @@
 ---
 name: cross-source-gap-analysis
-description: Compare findings across Slack, GitHub, and NVIDIA forums to identify alignment gaps, missing coverage, and follow-ups.
+description: Compare findings across Slack, GitHub, NVIDIA forums, and Outlook to identify alignment gaps, missing coverage, and follow-ups.
 ---
 
 # cross-source-gap-analysis
@@ -13,6 +13,7 @@ multiple sources rather than merely access one source.
 - Compare Slack discussion against GitHub issues or PRs
 - Compare Slack or GitHub findings against NVIDIA forum discussion
 - Identify missing coverage, inconsistent narratives, or follow-up areas across sources
+- Find external email discussions not reflected in internal meeting updates
 
 ## Inputs
 
@@ -35,6 +36,13 @@ Prefer a small, relevant slice from each source over broad collection. For examp
 - a recent Slack window for the relevant channel
 - mirrored GitHub issues, PRs, or discussions for the repo or feature area
 - mirrored NVIDIA forum topics for the `nemoclaw` tag scope
+- recent emails filtered to the relevant project and date range
+
+**For Outlook**: Use `--external-only --since Xd` to scope to external-sender
+emails, then `get_thread.py` to read the full conversation for any thread that
+looks relevant. The "Comparing external emails to internal meeting topics" section
+in the `outlook-email-search` skill has the step-by-step procedure for the common
+"what are external devs discussing that we haven't covered?" pattern.
 
 ### 2. Normalize what each source is saying
 
@@ -54,6 +62,7 @@ Look for:
 - issues discussed informally in Slack but not tracked in GitHub
 - GitHub work that appears to have little or no discussion in Slack
 - repeated mirrored forum concerns that are not reflected in Slack or GitHub
+- external email threads covering topics not mentioned in internal update emails
 - conflicting descriptions of status, priority, or ownership
 
 ### 4. Present the result

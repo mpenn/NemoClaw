@@ -378,6 +378,7 @@ export no_proxy="$_NO_PROXY_VAL"
 # egress; a non-empty value here means "provider is expected to be configured."
 export OUTLOOK_CLIENT_ID="openshell:resolve:env:OUTLOOK_CLIENT_ID"
 export OUTLOOK_SESSION_UUID="openshell:resolve:env:OUTLOOK_SESSION_UUID"
+export GRAPH_SIDECAR_URL="http://127.0.0.1:8766"
 
 _PROXY_MARKER_BEGIN="# nemoclaw-proxy-config begin"
 _PROXY_MARKER_END="# nemoclaw-proxy-config end"
@@ -391,6 +392,7 @@ export no_proxy=\"$_NO_PROXY_VAL\"
 export HERMES_HOME=\"${HERMES_WRITABLE}\"
 export SLACK_BOT_TOKEN=\"openshell:resolve:env:SLACK_BOT_TOKEN\"
 export GITHUB_TOKEN=\"openshell:resolve:env:GITHUB_TOKEN\"
+export GRAPH_SIDECAR_URL=\"http://127.0.0.1:8766\"
 ${_PROXY_MARKER_END}"
 
 if [ "$(id -u)" -eq 0 ]; then
