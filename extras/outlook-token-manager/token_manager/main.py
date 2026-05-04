@@ -58,16 +58,16 @@ COMPLETED_TTL = 300  # seconds to keep _completed entries after browser callback
 # login_hint) are written here when a session is first authenticated.
 SESSION_CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(CACHE_FILE)), "sessions.json")
 
-SCOPES = [
-#    "https://graph.microsoft.com/Mail.Read",
-#    "https://graph.microsoft.com/Mail.Read.Shared",
-#    "https://graph.microsoft.com/Mail.ReadWrite",
-#    "https://graph.microsoft.com/Mail.ReadWrite.Shared",
-#    "https://graph.microsoft.com/Mail.Send",
-#    "https://graph.microsoft.com/MailboxSettings.Read",
-#    "https://graph.microsoft.com/MailboxSettings.ReadWrite",
-#    "User.Read",
-]
+# Used for the initial interactive auth flow. Empty avoids explicit consent
+# prompts in corporate tenants where Mail scopes are admin-pre-consented on
+# the app registration — Microsoft returns the pre-consented scopes anyway.
+SCOPES = []
+
+# Used only for acquire_token_silent (token refresh). ".default" asks Microsoft
+# for all pre-consented permissions on the app registration without triggering
+# a new consent prompt. Required so the refresh grant succeeds after the
+# access token expires (empty scope list causes the refresh grant to fail).
+REFRESH_SCOPES = ["https://graph.microsoft.com/.default"]
 
 # ── Token cache (optionally encrypted at rest) ────────────────────────────────
 
@@ -230,7 +230,7 @@ def _try_silent(state: AppState) -> bool:
     accounts = state.app.get_accounts(username=state.username)
     if not accounts:
         return False
-    result = state.app.acquire_token_silent(SCOPES, account=accounts[0])
+    result = state.app.acquire_token_silent(REFRESH_SCOPES, account=accounts[0])
     if result and "access_token" in result:
         _apply_token(state, result)
         save_cache(state.cache)
@@ -261,7 +261,6 @@ async def _refresh_loop(state: AppState) -> None:
             await asyncio.sleep(sleep_secs)
         else:
             await asyncio.sleep(30)
-            continue
 
         log.info("Session %s (%s): refreshing token…", state.session_id[:8], state.username)
         loop = asyncio.get_event_loop()
@@ -698,7 +697,7 @@ async def main() -> None:
         restored = False
         for account in accounts:
             username = account.get("username", "")
-            result = app.acquire_token_silent(SCOPES, account=account)
+            result = app.acquire_token_silent(REFRESH_SCOPES, account=account)
             if result and "access_token" in result:
                 state = AppState(
                     session_id=sid,
