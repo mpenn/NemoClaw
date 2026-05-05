@@ -92,7 +92,7 @@ log = logging.getLogger(__name__)
 
 # ── Auth placeholder ─────────────────────────────────────────────────────────
 # Sentinel swapped by the credential sidecar before the request reaches Graph.
-MS_GRAPH_TOKEN_PLACEHOLDER = "MS_GRAPH_TOKEN_PLACEHOLDER"
+MS_GRAPH_TOKEN_PLACEHOLDER = "MS_GRAPH_TOKEN_PLACEHOLDER_OUTLOOK"
 
 # ── Mailbox config ───────────────────────────────────────────────────────────
 # OpenShell provider placeholder — the L7 proxy rewrites it at egress.

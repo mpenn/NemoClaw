@@ -26,7 +26,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-MS_GRAPH_TOKEN_PLACEHOLDER = "MS_GRAPH_TOKEN_PLACEHOLDER"
+MS_GRAPH_TOKEN_PLACEHOLDER = "MS_GRAPH_TOKEN_PLACEHOLDER_OUTLOOK"
 
 
 def _graph_base() -> str:

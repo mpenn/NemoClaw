@@ -109,7 +109,7 @@ def probe_via_sidecar(label: str, path: str, sidecar: str) -> bool:
     """Probe via the credential sidecar (which injects the real token)."""
     url = f"{sidecar.rstrip('/')}/{path.lstrip('/')}"
     code, data = _get(url, headers={
-        "Authorization": "Bearer MS_GRAPH_TOKEN_PLACEHOLDER",
+        "Authorization": "Bearer MS_GRAPH_TOKEN_PLACEHOLDER_OUTLOOK",
         "Accept": "application/json",
     })
     ok = code == 200
