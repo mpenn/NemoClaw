@@ -25,7 +25,7 @@ RUN apt-get update -qq \
     && apt-get install -y --no-install-recommends binutils python3-pip libpython3.11 \
     && rm -rf /var/lib/apt/lists/*
 RUN pip3 install --no-cache-dir --break-system-packages aiohttp pyinstaller
-COPY agents/hermes/bridges/outlook/sidecar/ms_graph_sidecar.py /build/
+COPY agents/hermes/sidecars/ms_graph_sidecar/ms_graph_sidecar.py /build/
 WORKDIR /build
 RUN pyinstaller \
       --onefile \
@@ -89,7 +89,7 @@ ENV HERMES_TELEGRAM_DISABLE_FALLBACK_IPS=1 \
 # Copy NemoClaw plugin for Hermes (Python-based)
 COPY agents/hermes/plugin/ /opt/nemoclaw-hermes-plugin/
 
-# Copy Outlook sidecar bridge and default cron jobs.
+# Copy bridges and default cron jobs.
 # Install under /usr/local/lib/ so Landlock's read_only /usr rule permits access.
 COPY agents/hermes/bridges/ /usr/local/lib/nemoclaw-bridges/
 
