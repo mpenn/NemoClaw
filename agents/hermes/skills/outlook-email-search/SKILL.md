@@ -20,7 +20,7 @@ was communicated, or pulling context from recent correspondence.
 
 ## Access model
 
-- All Graph API requests go through the credential sidecar on `127.0.0.1:8766`.
+- All Graph API requests go through the credential sidecar at `$GRAPH_SIDECAR_URL`.
 - Use `Authorization: Bearer OUTLOOK_TOKEN_PLACEHOLDER` — the sidecar swaps
   this for a live delegated token before forwarding to `graph.microsoft.com`.
 - `GRAPH_SIDECAR_URL` is already set in the environment; the helper script reads it.
@@ -132,7 +132,7 @@ one message directly:
 
 ```bash
 # Replace USER@nvidia.com with the value of OUTLOOK_REPLY_TO
-curl -s "http://127.0.0.1:8766/v1.0/users/USER@nvidia.com/messages/MESSAGE_ID?\$select=subject,body,from,receivedDateTime" \
+curl -s "${GRAPH_SIDECAR_URL}/v1.0/users/USER@nvidia.com/messages/MESSAGE_ID?\$select=subject,body,from,receivedDateTime" \
   -H "Authorization: Bearer OUTLOOK_TOKEN_PLACEHOLDER" | python3 -c "
 import json, sys, html, re
 d = json.load(sys.stdin)

@@ -176,6 +176,16 @@ function main(): void {
   if (msgChannels.includes("slack")) {
     envLines.push("SLACK_HOME_CHANNEL=none");
   }
+  if (msgChannels.includes("outlook")) {
+    const sidecarPort = process.env.SIDECAR_LISTEN_PORT ?? "8766";
+    envLines.push(`GRAPH_SIDECAR_URL=http://127.0.0.1:${sidecarPort}`);
+    for (const key of ["OUTLOOK_TARGET_MAILBOX", "OUTLOOK_REPLY_TO", "OUTLOOK_ALLOWED_SENDERS"]) {
+      const value = process.env[key]?.trim();
+      if (value) {
+        envLines.push(`${key}=${value}`);
+      }
+    }
+  }  
   for (const key of SOURCE_ETL_ENV) {
     const value = process.env[key]?.trim();
     if (value) {

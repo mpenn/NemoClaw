@@ -15,12 +15,12 @@ Usage (from host, token manager on localhost:8765):
         --target-mailbox agt-mpenn@nvidia.com \\
         [--token-manager http://localhost:8765]
 
-Usage (from sandbox, via sidecar on 127.0.0.1:8766):
+Usage (from sandbox, via sidecar):
     python3 validate_graph_access.py \\
         --session-id "$OUTLOOK_SESSION_UUID" \\
         --reply-to "$OUTLOOK_REPLY_TO" \\
         --target-mailbox "$OUTLOOK_TARGET_MAILBOX" \\
-        --sidecar http://127.0.0.1:8766 \\
+        --sidecar "$GRAPH_SIDECAR_URL" \\
         --token-manager http://host.docker.internal:8765
 """
 
@@ -142,7 +142,7 @@ def main() -> int:
                         help="Token manager URL (default: http://localhost:8765)")
     parser.add_argument("--sidecar",
                         default=os.environ.get("GRAPH_SIDECAR_URL", ""),
-                        help="Sidecar URL if testing via sidecar (e.g. http://127.0.0.1:8766)")
+                        help="Sidecar URL if testing via sidecar (default: $GRAPH_SIDECAR_URL)")
     args = parser.parse_args()
 
     if not args.session_id or args.session_id.startswith("openshell:"):
@@ -224,7 +224,7 @@ def main() -> int:
     # ── Summary ───────────────────────────────────────────────────────────────
     print(f"\n{BOLD}Done.{RESET}")
     if not args.sidecar:
-        print(f"  Tip: add --sidecar http://127.0.0.1:8766 to also probe via the credential sidecar.")
+        print(f"  Tip: add --sidecar $GRAPH_SIDECAR_URL to also probe via the credential sidecar.")
     print()
     return 0
 
