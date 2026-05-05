@@ -22,8 +22,10 @@ services:
   # Outlook auth
   # ---------------------------------------------------------------------------
 
-  outlook-token-manager:
-    build: ./outlook-token-manager
+  ms-graph-token-manager:
+    build: ./ms-graph-token-manager
+    environment:
+      TOKEN_CACHE_SALT: ${TOKEN_CACHE_SALT:-nemoclaw-ms-graph-v1}
     volumes:
       - token-cache:/token-cache
     ports:
