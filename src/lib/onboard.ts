@@ -833,6 +833,38 @@ function upsertGithubProvider(sandboxName) {
 }
 
 /**
+ * Create or update the consolidated Outlook provider for the sandbox.
+ * Carries OUTLOOK_CLIENT_ID, OUTLOOK_TENANT_ID, and OUTLOOK_SESSION_UUID in a
+ * single provider named `${sandboxName}-outlook`. Each credential is upserted
+ * individually — OpenShell's `provider update --credential` accumulates them.
+ * Returns the provider name, or null if no credentials are available.
+ */
+function upsertOutlookProvider(
+  sandboxName: string,
+  clientId: string | null,
+  tenantId: string | null,
+  sessionId: string | null,
+): string | null {
+  if (!clientId && !tenantId && !sessionId) return null;
+  const name = `${sandboxName}-outlook`;
+  const creds: Array<[string, string]> = (
+    [
+      ["OUTLOOK_CLIENT_ID", clientId],
+      ["OUTLOOK_TENANT_ID", tenantId],
+      ["OUTLOOK_SESSION_UUID", sessionId],
+    ] as Array<[string, string | null]>
+  ).filter((pair): pair is [string, string] => !!pair[1]);
+  for (const [envKey, value] of creds) {
+    const result = upsertProvider(name, "generic", envKey, null, { [envKey]: value });
+    if (!result.ok) {
+      console.error(`  ✗ Failed to upsert Outlook provider '${name}' (${envKey}): ${result.message}`);
+      process.exit(1);
+    }
+  }
+  return name;
+}
+
+/**
  * Check whether an OpenShell provider exists in the gateway.
  *
  * Queries the gateway-level provider registry via `openshell provider get`.
@@ -1263,10 +1295,6 @@ async function configureOutlookTokenManager(agent, hasOutlook: boolean) {
   const localHost = normalizeCredentialValue(process.env.TOKEN_MANAGER_LOCAL_HOST) || "localhost";
   const tmBase = `http://${localHost}:${TOKEN_MANAGER_PORT_DEFAULT}`;
 
-  // One-time migration: remove legacy UPPERCASE provider name from gateway if present.
-  if (providerExistsInGateway("OUTLOOK_SESSION_UUID")) {
-    runOpenshell(["provider", "delete", "OUTLOOK_SESSION_UUID"], { ignoreError: true });
-  }
 
   // Shortcut: if a session UUID is already stored, try it first.
   const savedSessionId = getCredential("OUTLOOK_SESSION_UUID");
@@ -3233,21 +3261,8 @@ async function createSandbox(
       envKey: "TELEGRAM_BOT_TOKEN",
       token: getMessagingToken("TELEGRAM_BOT_TOKEN"),
     },
-    // Outlook: CLIENT_ID and TENANT_ID go into the provider store so that
-    // openshell:resolve:env:OUTLOOK_CLIENT_ID / OUTLOOK_TENANT_ID are rewritten
-    // by the L7 proxy in the X-Client-ID / X-Tenant-ID headers of the sidecar's
-    // /token requests. No CLIENT_SECRET or BASIC_AUTH — delegated auth.
-    // OUTLOOK_SESSION_UUID is attached separately after this list (see below).
-    {
-      name: `${sandboxName}-outlook-bridge`,
-      envKey: "OUTLOOK_CLIENT_ID",
-      token: getMessagingToken("OUTLOOK_CLIENT_ID"),
-    },
-    {
-      name: `${sandboxName}-outlook-bridge`,
-      envKey: "OUTLOOK_TENANT_ID",
-      token: getMessagingToken("OUTLOOK_TENANT_ID"),
-    },
+    // Outlook credentials (CLIENT_ID, TENANT_ID, SESSION_UUID) are consolidated
+    // into the ${sandboxName}-outlook provider via upsertOutlookProvider below.
   ].filter(({ envKey }) => !enabledEnvKeys || enabledEnvKeys.has(envKey));
 
   if (webSearchConfig) {
@@ -3512,13 +3527,17 @@ async function createSandbox(
     createArgs.push("--provider", p);
   }
 
-  // Register and attach the Outlook session UUID provider. This happens here
+  // Register and attach the consolidated Outlook provider. This happens here
   // (not in configureOutlookTokenManager) because sandboxName is not yet known
   // during step 5 when token manager auth runs.
-  const savedOutlookSessionId = getCredential("OUTLOOK_SESSION_UUID") || normalizeCredentialValue(process.env.OUTLOOK_SESSION_UUID);
-  if (savedOutlookSessionId) {
-    upsertProvider(`${sandboxName}-outlook-session`, "generic", "OUTLOOK_SESSION_UUID", null, { "OUTLOOK_SESSION_UUID": savedOutlookSessionId });
-    createArgs.push("--provider", `${sandboxName}-outlook-session`);
+  const outlookProviderName = upsertOutlookProvider(
+    sandboxName,
+    getMessagingToken("OUTLOOK_CLIENT_ID"),
+    getMessagingToken("OUTLOOK_TENANT_ID"),
+    getCredential("OUTLOOK_SESSION_UUID") || normalizeCredentialValue(process.env.OUTLOOK_SESSION_UUID),
+  );
+  if (outlookProviderName) {
+    createArgs.push("--provider", outlookProviderName);
   }
 
   // Create a GitHub provider when a token is available. OpenShell's native

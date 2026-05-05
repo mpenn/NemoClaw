@@ -87,7 +87,7 @@ It also asks for the optional sender allowlist — leave blank to accept all sen
 
 Complete the rest of the wizard so the blueprint can:
 
-- Create an OpenShell provider (`<sandbox>-outlook-bridge`) with the four credentials.
+- Create an OpenShell provider (`<sandbox>-outlook`) with the credentials.
 - Bake `outlook` into the channel list (`NEMOCLAW_MESSAGING_CHANNELS_B64`).
 - Bake the allowed-senders list as the `NEMOCLAW_OUTLOOK_ALLOWED_SENDERS` image environment variable.
 - Build the sandbox image and start the gateway.
@@ -114,7 +114,7 @@ If the bridge does not start, verify that:
 
 - `openshell sandbox policy` shows `graph.microsoft.com` and `login.microsoftonline.com` as allowed.
 - The Azure app has **Granted** application permissions (not delegated).
-- `openshell provider list` shows `<sandbox>-outlook-bridge` with all four credentials.
+- `openshell provider list` shows `<sandbox>-outlook` with all credentials.
 
 ## Scheduled Jobs
 
