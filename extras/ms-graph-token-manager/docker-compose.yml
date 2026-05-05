@@ -8,6 +8,8 @@ services:
   token-manager:
     build: .
     env_file: .env
+    environment:
+      TOKEN_CACHE_SALT: ${TOKEN_CACHE_SALT:-nemoclaw-ms-graph-v1}
     volumes:
       - token-cache:/token-cache
     ports:

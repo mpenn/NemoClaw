@@ -1371,8 +1371,8 @@ async function applyOutlookTokenManagerEgressPolicy(sandboxName) {
   if (!tokenManagerHost) return;
 
   const presetEntries = [
-    "  outlook_token_manager:",
-    "    name: outlook_token_manager",
+    "  ms_graph_token_manager:",
+    "    name: ms_graph_token_manager",
     "    endpoints:",
     `      - host: ${tokenManagerHost}`,
     `        port: ${TOKEN_MANAGER_PORT_DEFAULT}`,

@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
-# Delegated Outlook token manager — UUID session architecture.
+# MS Graph token manager — UUID session architecture.
 #
 # External API (port TOKEN_MANAGER_PORT, default 8765):
 #   POST /auth/start             — initiate auth flow; returns session_id (UUID4)
@@ -71,7 +71,7 @@ REFRESH_SCOPES = ["https://graph.microsoft.com/.default"]
 
 # ── Token cache (optionally encrypted at rest) ────────────────────────────────
 
-_SALT = b"nemoclaw-delegated-outlook-v1"
+_SALT = os.environ.get("TOKEN_CACHE_SALT", "nemoclaw-ms-graph-v1").encode()
 
 
 def _fernet(passphrase: str) -> Fernet:
@@ -676,8 +676,8 @@ async def main() -> None:
     _cache = load_cache()
 
     # Restore sessions from persisted config file. Each entry records the
-    # session_id that the sidecar already knows, so OUTLOOK_SESSION_UUID in
-    # the sidecar continues to work across token manager restarts without
+    # session_id that the sidecar already knows, so the session UUID env var
+    # in the sidecar continues to work across token manager restarts without
     # requiring re-onboarding.
     session_configs = _load_session_configs()
     if session_configs:

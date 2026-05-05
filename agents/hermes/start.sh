@@ -290,7 +290,7 @@ cleanup() {
   exit "$gateway_status"
 }
 
-start_outlook_sidecar() {
+start_ms_graph_sidecar() {
   _has_outlook_channel || return 0
   local sidecar_bin="/usr/local/bin/ms-graph-sidecar"
   [ -f "$sidecar_bin" ] || {
@@ -306,7 +306,7 @@ start_outlook_sidecar() {
   sidecar_env="SIDECAR_LISTEN_HOST=${SIDECAR_LISTEN_ADDR} SIDECAR_LISTEN_PORT=${SIDECAR_PORT}"
   if [ "$(id -u)" -eq 0 ]; then
     # shellcheck disable=SC2086
-    nohup env ${sidecar_env} gosu outlook-proxy "$sidecar_bin" >>/tmp/ms-graph-sidecar.log 2>&1 &
+    nohup env ${sidecar_env} gosu ms-graph-proxy "$sidecar_bin" >>/tmp/ms-graph-sidecar.log 2>&1 &
   else
     # shellcheck disable=SC2086
     nohup env ${sidecar_env} "$sidecar_bin" >>/tmp/ms-graph-sidecar.log 2>&1 &
@@ -488,7 +488,7 @@ if [ "$(id -u)" -ne 0 ]; then
   echo "[gateway] hermes gateway launched (pid $GATEWAY_PID)" >&2
   trap cleanup SIGTERM SIGINT
   start_socat_forwarder
-  start_outlook_sidecar
+  start_ms_graph_sidecar
   start_outlook_bridge
   print_dashboard_urls
 
@@ -557,7 +557,7 @@ GATEWAY_PID=$!
 echo "[gateway] hermes gateway launched as 'gateway' user (pid $GATEWAY_PID)" >&2
 trap cleanup SIGTERM SIGINT
 start_socat_forwarder
-start_outlook_sidecar
+start_ms_graph_sidecar
 start_outlook_bridge
 print_dashboard_urls
 

@@ -402,7 +402,7 @@ This brings up four containers:
 
 ### Docker network requirement
 
-The unified extras stack includes Phoenix, the Outlook token manager, Postgres,
+The unified extras stack includes Phoenix, the MS Graph token manager, Postgres,
 ETLs, and PostgREST. PostGREST must be reachable from the OpenShell L7 proxy on
 the gateway cluster network, so `extras/docker-compose.yml` declares an external
 network named by `SOURCE_ETL_OPENSHELL_NETWORK`, defaulting to
@@ -412,7 +412,7 @@ That external network is created by the OpenShell gateway when the sandbox is
 first started. Because Docker Compose validates the external network before
 starting the stack, **the unified extras stack cannot be started on a fresh host
 until after an initial onboard has created the OpenShell gateway network**.
-This also means the Outlook token manager in the unified extras stack is not
+This also means the MS Graph token manager in the unified extras stack is not
 available for the very first Outlook authentication attempt. Use the fresh-host
 ordering in [8. Run Onboard, Start ETLs, and Apply Policy](#8-run-onboard-start-etls-and-apply-policy).
 
@@ -497,7 +497,7 @@ user via Microsoft Entra ID and caches a refresh token in `sessions.json`. This
 happens once interactively during onboard; subsequent non-interactive onboards
 reuse the saved session.
 
-On a fresh host, there is one ordering wrinkle: the Outlook token manager is part
+On a fresh host, there is one ordering wrinkle: the MS Graph token manager is part
 of the unified extras stack, but that stack needs the OpenShell gateway Docker
 network that onboard creates. If you have not created the sandbox before, do the
 first onboard pass with Outlook deselected or with `OUTLOOK_CLIENT_ID` and
@@ -540,7 +540,7 @@ Fresh hosts need two passes when Outlook is enabled:
 1. Run onboard once to create the OpenShell gateway network. Leave Outlook
    deselected in the messaging prompt, or temporarily unset `OUTLOOK_CLIENT_ID`
    and `OUTLOOK_TENANT_ID` before this first pass.
-2. Start the unified extras stack. This starts the Outlook token manager on the
+2. Start the unified extras stack. This starts the MS Graph token manager on the
    host, along with Phoenix, Postgres, ETLs, and PostGREST.
 3. Rerun `nemoclaw onboard --recreate-sandbox` with Outlook enabled. This pass
    authenticates with the token manager, saves `OUTLOOK_SESSION_UUID`, rebuilds
@@ -612,7 +612,7 @@ nemoclaw nemoclaw-hermes rebuild --yes
 ### 8b. Start the host-side source ETLs
 
 After onboard has created the OpenShell gateway network, start the unified extras
-stack (Phoenix, Outlook token manager, Postgres, ETLs, PostgREST):
+stack (Phoenix, MS Graph token manager, Postgres, ETLs, PostgREST):
 
 ```bash
 docker compose -f extras/docker-compose.yml --env-file .env up -d --build
@@ -715,7 +715,7 @@ resolved source-etls PostgREST endpoint. It should not include
 | Preset | What it opens | Notes |
 |--------|--------------|-------|
 | `slack` | `slack.com`, `api.slack.com`, `hooks.slack.com`, Socket Mode WebSocket | Required — Slack is a live interaction and research channel |
-| `outlook` | `graph.microsoft.com` (via credential sidecar), Outlook token manager on host | Required — Outlook mailbox monitoring and replies via delegated auth |
+| `outlook` | `graph.microsoft.com` (via credential sidecar), MS Graph token manager on host | Required — Outlook mailbox monitoring and replies via delegated auth |
 | `postgres` | Source-etls PostgREST bridge | Required — gives the sandbox access to the read-only source-etls REST bridge |
 
 The `github` and `nvidia-forum` presets exist in `nemoclaw-blueprint/policies/presets/`

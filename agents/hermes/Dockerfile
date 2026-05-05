@@ -62,10 +62,10 @@ RUN (apt-get remove --purge -y gcc gcc-12 g++ g++-12 cpp cpp-12 make \
     && apt-get autoremove --purge -y \
     && rm -rf /var/lib/apt/lists/*
 
-# Add dedicated user for the credential sidecar (uid 1001).
+# Add dedicated user for the MS Graph sidecar (uid 1001).
 # Running as a separate user from the sandbox (uid 1000) prevents the Hermes
 # agent from accessing the sidecar's process memory via /proc.
-RUN adduser --disabled-password --gecos "" --uid 1001 outlook-proxy
+RUN adduser --disabled-password --gecos "" --uid 1001 ms-graph-proxy
 
 # Install GitHub CLI (gh) — not in the base image.
 # GH_TOKEN is set below so gh authenticates via the OpenShell provider pipeline.
