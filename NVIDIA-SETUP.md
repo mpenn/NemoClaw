@@ -32,7 +32,7 @@ flowchart LR
           subgraph sandbox["OpenShell Sandbox"]
               agent["Hermes Agent\nLLM + NemoFlow"]
               outlookBridge["Outlook Bridge"]
-              credSidecar["Credential Sidecar\n127.0.0.1:8766"]
+              credSidecar["MS Graph Sidecar\n127.0.0.1:8766"]
 
               subgraph sourceSkills["Source Skills"]
                   direction LR
@@ -67,7 +67,7 @@ flowchart LR
           postgrest["PostgREST\nread-only :3100"]
           postgres[("PostgreSQL\nsource mirror")]
           etls["Source ETLs\nGitHub + Forums\nhourly deltas"]
-          tokenManager["Token Manager\nMSAL sessions\n:8765"]
+          tokenManager["MS Graph Token Manager\nMSAL sessions\n:8765"]
 
           proxy -->|"OTLP traces"| phoenix
           postgrest --> postgres
