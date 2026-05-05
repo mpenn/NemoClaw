@@ -10,9 +10,9 @@
 # so Docker treats them as global build args (multi-stage scoping rule).
 ARG BASE_IMAGE=ghcr.io/nvidia/nemoclaw/hermes-sandbox-base:latest
 
-# ── Stage 0: build the Outlook credential sidecar binary ──────────────────────
+# ── Stage 0: build the MS Graph API sidecar binary ────────────────────────────
 # PyInstaller produces a self-contained executable at a unique path
-# (/usr/local/bin/outlook-credential-sidecar), distinct from /usr/bin/python3,
+# (/usr/local/bin/ms-graph-sidecar), distinct from /usr/bin/python3,
 # enabling OpenShell binary-path policy enforcement to restrict token-manager
 # access to the sidecar only.
 #
@@ -25,14 +25,14 @@ RUN apt-get update -qq \
     && apt-get install -y --no-install-recommends binutils python3-pip libpython3.11 \
     && rm -rf /var/lib/apt/lists/*
 RUN pip3 install --no-cache-dir --break-system-packages aiohttp pyinstaller
-COPY agents/hermes/bridges/outlook/sidecar/credential_sidecar.py /build/
+COPY agents/hermes/bridges/outlook/sidecar/ms_graph_sidecar.py /build/
 WORKDIR /build
 RUN pyinstaller \
       --onefile \
-      --name outlook-credential-sidecar \
+      --name ms-graph-sidecar \
       --hidden-import aiohttp \
       --hidden-import aiohttp.web \
-      credential_sidecar.py
+      ms_graph_sidecar.py
 
 # ── Main sandbox image ────────────────────────────────────────────────────────
 FROM ${BASE_IMAGE}
@@ -51,10 +51,10 @@ ENV PHOENIX_COLLECTOR_ENDPOINT=${PHOENIX_COLLECTOR_ENDPOINT}
 ARG TOKEN_MANAGER_HOST=host.docker.internal
 ENV TOKEN_MANAGER_HOST=${TOKEN_MANAGER_HOST}
 
-# Install the Outlook credential sidecar binary from the builder stage.
+# Install the MS Graph sidecar binary from the builder stage.
 # The distinct binary path enables OpenShell binary-path policy enforcement.
-COPY --from=sidecar-builder /build/dist/outlook-credential-sidecar /usr/local/bin/outlook-credential-sidecar
-RUN chmod 755 /usr/local/bin/outlook-credential-sidecar
+COPY --from=sidecar-builder /build/dist/ms-graph-sidecar /usr/local/bin/ms-graph-sidecar
+RUN chmod 755 /usr/local/bin/ms-graph-sidecar
 
 # Harden: remove unnecessary build tools and network probes
 RUN (apt-get remove --purge -y gcc gcc-12 g++ g++-12 cpp cpp-12 make \

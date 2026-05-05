@@ -1,10 +1,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
-# Outlook credential sidecar.
+# Microsoft Graph API credential sidecar.
 #
 # Accepts plain HTTP requests from the bridge/skill on 127.0.0.1:8766,
-# swaps `Authorization: Bearer OUTLOOK_TOKEN_PLACEHOLDER` with the live
+# swaps `Authorization: Bearer MS_GRAPH_TOKEN_PLACEHOLDER` with the live
 # access token, and forwards to https://graph.microsoft.com via the
 # upstream proxy (OpenShell L7 proxy chain).
 #
@@ -16,7 +16,7 @@
 #   TLS certificate management. The upstream leg (sidecar → Graph) is HTTPS.
 #
 # Bridge/skill configuration:
-#   Set GRAPH_SIDECAR_URL=http://127.0.0.1:8766 (or SIDECAR_LISTEN_PORT override).
+#   Set MS_GRAPH_SIDECAR_URL=http://127.0.0.1:8766 (or SIDECAR_LISTEN_PORT override).
 #   The bridge replaces https://graph.microsoft.com/v1.0 with this URL.
 #   NO_PROXY must include 127.0.0.1 so the client connects directly (not via
 #   the OpenShell proxy) — this is already set in start.sh.
@@ -31,14 +31,14 @@ from aiohttp import web
 
 logging.basicConfig(
     level=logging.INFO,
-    format="[outlook-sidecar] %(asctime)s %(levelname)s %(message)s",
+    format="[ms-graph-sidecar] %(asctime)s %(levelname)s %(message)s",
     stream=sys.stderr,
 )
 log = logging.getLogger(__name__)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-OUTLOOK_TOKEN_PLACEHOLDER = "OUTLOOK_TOKEN_PLACEHOLDER"
+MS_GRAPH_TOKEN_PLACEHOLDER = "MS_GRAPH_TOKEN_PLACEHOLDER"
 GRAPH_UPSTREAM_BASE = "https://graph.microsoft.com"
 
 TOKEN_MANAGER_HOST = os.environ.get("TOKEN_MANAGER_HOST", "host.docker.internal")
@@ -69,7 +69,7 @@ _token_refresh_lock: asyncio.Lock | None = None
 async def fetch_token() -> str:
     # No explicit proxy: the sidecar's inherited HTTP_PROXY points directly to
     # the OpenShell L7 proxy, so OpenShell correctly attributes this connection
-    # to /usr/local/bin/outlook-credential-sidecar for policy enforcement.
+    # to /usr/local/bin/ms-graph-sidecar for policy enforcement.
     # (Routing through the decode-proxy would mis-attribute to python3.11.)
     if not SESSION_ID:
         raise ValueError("OUTLOOK_SESSION_UUID not set — cannot fetch token without session_id")
@@ -153,7 +153,7 @@ async def handle(request: web.Request) -> web.StreamResponse:
     base_headers["Host"] = "graph.microsoft.com"
 
     auth = base_headers.get("Authorization", "")
-    uses_placeholder = OUTLOOK_TOKEN_PLACEHOLDER in auth
+    uses_placeholder = MS_GRAPH_TOKEN_PLACEHOLDER in auth
 
     body = await request.read()
 

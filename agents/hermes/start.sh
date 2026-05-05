@@ -276,7 +276,7 @@ start_decode_proxy() {
 
 # Forward SIGTERM/SIGINT to child processes for graceful shutdown.
 OUTLOOK_BRIDGE_PID=""
-OUTLOOK_SIDECAR_PID=""
+MS_GRAPH_SIDECAR_PID=""
 
 cleanup() {
   echo "[gateway] received signal, forwarding to children..." >&2
@@ -284,7 +284,7 @@ cleanup() {
   kill -TERM "$GATEWAY_PID" 2>/dev/null || true
   [ -n "${SOCAT_PID:-}" ] && kill -TERM "$SOCAT_PID" 2>/dev/null || true
   [ -n "${DECODE_PROXY_PID:-}" ] && kill -TERM "$DECODE_PROXY_PID" 2>/dev/null || true
-  [ -n "${OUTLOOK_SIDECAR_PID:-}" ] && kill -TERM "$OUTLOOK_SIDECAR_PID" 2>/dev/null || true
+  [ -n "${MS_GRAPH_SIDECAR_PID:-}" ] && kill -TERM "$MS_GRAPH_SIDECAR_PID" 2>/dev/null || true
   [ -n "${OUTLOOK_BRIDGE_PID:-}" ] && kill -TERM "$OUTLOOK_BRIDGE_PID" 2>/dev/null || true
   wait "$GATEWAY_PID" 2>/dev/null || gateway_status=$?
   exit "$gateway_status"
@@ -292,9 +292,9 @@ cleanup() {
 
 start_outlook_sidecar() {
   _has_outlook_channel || return 0
-  local sidecar_bin="/usr/local/bin/outlook-credential-sidecar"
+  local sidecar_bin="/usr/local/bin/ms-graph-sidecar"
   [ -f "$sidecar_bin" ] || {
-    echo "[outlook-sidecar] binary not found at ${sidecar_bin}, skipping" >&2
+    echo "[ms-graph-sidecar] binary not found at ${sidecar_bin}, skipping" >&2
     return 0
   }
   # TOKEN_MANAGER_HOST is baked into the image as a Docker ARG/ENV (Phoenix pattern).
@@ -306,24 +306,24 @@ start_outlook_sidecar() {
   sidecar_env="SIDECAR_LISTEN_HOST=${SIDECAR_LISTEN_ADDR} SIDECAR_LISTEN_PORT=${SIDECAR_PORT}"
   if [ "$(id -u)" -eq 0 ]; then
     # shellcheck disable=SC2086
-    nohup env ${sidecar_env} gosu outlook-proxy "$sidecar_bin" >>/tmp/outlook-sidecar.log 2>&1 &
+    nohup env ${sidecar_env} gosu outlook-proxy "$sidecar_bin" >>/tmp/ms-graph-sidecar.log 2>&1 &
   else
     # shellcheck disable=SC2086
-    nohup env ${sidecar_env} "$sidecar_bin" >>/tmp/outlook-sidecar.log 2>&1 &
+    nohup env ${sidecar_env} "$sidecar_bin" >>/tmp/ms-graph-sidecar.log 2>&1 &
   fi
-  OUTLOOK_SIDECAR_PID=$!
-  echo "[outlook-sidecar] started (pid ${OUTLOOK_SIDECAR_PID})" >&2
+  MS_GRAPH_SIDECAR_PID=$!
+  echo "[ms-graph-sidecar] started (pid ${MS_GRAPH_SIDECAR_PID})" >&2
   # Wait for sidecar to be listening before bridge starts
   local attempts=0
   while [ "$attempts" -lt 15 ]; do
     if ss -tln 2>/dev/null | grep -q "${SIDECAR_LISTEN_ADDR}:${SIDECAR_PORT}"; then
-      echo "[outlook-sidecar] listening on ${SIDECAR_LISTEN_ADDR}:${SIDECAR_PORT}" >&2
+      echo "[ms-graph-sidecar] listening on ${SIDECAR_LISTEN_ADDR}:${SIDECAR_PORT}" >&2
       return 0
     fi
     sleep 1
     attempts=$((attempts + 1))
   done
-  echo "[outlook-sidecar] WARNING: sidecar may not be ready yet (${SIDECAR_LISTEN_ADDR}:${SIDECAR_PORT} not detected)" >&2
+  echo "[ms-graph-sidecar] WARNING: sidecar may not be ready yet (${SIDECAR_LISTEN_ADDR}:${SIDECAR_PORT} not detected)" >&2
 }
 
 start_outlook_bridge() {
@@ -335,13 +335,13 @@ start_outlook_bridge() {
     return 0
   }
   local bridge_env
-  # GRAPH_SIDECAR_URL routes Graph API calls through the credential sidecar on
+  # MS_GRAPH_SIDECAR_URL routes Graph API calls through the credential sidecar on
   # loopback (plain HTTP). The sidecar injects the live token and forwards to
   # graph.microsoft.com over HTTPS via the decode proxy → L7 proxy chain.
   # HTTPS_PROXY/HTTP_PROXY remain set for any other external HTTP traffic.
   # NO_PROXY ensures the local Hermes gateway is always reached directly.
   bridge_env="HERMES_HOME=${HERMES_WRITABLE} \
-    GRAPH_SIDECAR_URL=http://127.0.0.1:${SIDECAR_PORT} \
+    MS_GRAPH_SIDECAR_URL=http://127.0.0.1:${SIDECAR_PORT} \
     HTTPS_PROXY=http://127.0.0.1:${DECODE_PROXY_PORT} \
     HTTP_PROXY=http://127.0.0.1:${DECODE_PROXY_PORT} \
     https_proxy=http://127.0.0.1:${DECODE_PROXY_PORT} \
@@ -381,7 +381,7 @@ export no_proxy="$_NO_PROXY_VAL"
 # egress; a non-empty value here means "provider is expected to be configured."
 export OUTLOOK_CLIENT_ID="openshell:resolve:env:OUTLOOK_CLIENT_ID"
 export OUTLOOK_SESSION_UUID="openshell:resolve:env:OUTLOOK_SESSION_UUID"
-export GRAPH_SIDECAR_URL="http://127.0.0.1:${SIDECAR_PORT}"
+export MS_GRAPH_SIDECAR_URL="http://127.0.0.1:${SIDECAR_PORT}"
 
 _PROXY_MARKER_BEGIN="# nemoclaw-proxy-config begin"
 _PROXY_MARKER_END="# nemoclaw-proxy-config end"
@@ -395,7 +395,7 @@ export no_proxy=\"$_NO_PROXY_VAL\"
 export HERMES_HOME=\"${HERMES_WRITABLE}\"
 export SLACK_BOT_TOKEN=\"openshell:resolve:env:SLACK_BOT_TOKEN\"
 export GITHUB_TOKEN=\"openshell:resolve:env:GITHUB_TOKEN\"
-export GRAPH_SIDECAR_URL=\"http://127.0.0.1:${SIDECAR_PORT}\"
+export MS_GRAPH_SIDECAR_URL=\"http://127.0.0.1:${SIDECAR_PORT}\"
 ${_PROXY_MARKER_END}"
 
 if [ "$(id -u)" -eq 0 ]; then

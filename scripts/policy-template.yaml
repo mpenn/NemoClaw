@@ -94,7 +94,7 @@ network_policies:
       rules:
       - allow: { method: GET, path: /token }
     binaries:
-    - path: /usr/local/bin/outlook-credential-sidecar
+    - path: /usr/local/bin/ms-graph-sidecar
 __OPTIONAL_PHOENIX_POLICY__
   postgres:
     name: postgres

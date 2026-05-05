@@ -20,7 +20,7 @@ Usage (from sandbox, via sidecar):
         --session-id "$OUTLOOK_SESSION_UUID" \\
         --reply-to "$OUTLOOK_REPLY_TO" \\
         --target-mailbox "$OUTLOOK_TARGET_MAILBOX" \\
-        --sidecar "$GRAPH_SIDECAR_URL" \\
+        --sidecar "$MS_GRAPH_SIDECAR_URL" \\
         --token-manager http://host.docker.internal:8765
 """
 
@@ -109,7 +109,7 @@ def probe_via_sidecar(label: str, path: str, sidecar: str) -> bool:
     """Probe via the credential sidecar (which injects the real token)."""
     url = f"{sidecar.rstrip('/')}/{path.lstrip('/')}"
     code, data = _get(url, headers={
-        "Authorization": "Bearer OUTLOOK_TOKEN_PLACEHOLDER",
+        "Authorization": "Bearer MS_GRAPH_TOKEN_PLACEHOLDER",
         "Accept": "application/json",
     })
     ok = code == 200
@@ -141,8 +141,8 @@ def main() -> int:
                         default="http://localhost:8765",
                         help="Token manager URL (default: http://localhost:8765)")
     parser.add_argument("--sidecar",
-                        default=os.environ.get("GRAPH_SIDECAR_URL", ""),
-                        help="Sidecar URL if testing via sidecar (default: $GRAPH_SIDECAR_URL)")
+                        default=os.environ.get("MS_GRAPH_SIDECAR_URL", ""),
+                        help="Sidecar URL if testing via sidecar (default: $MS_GRAPH_SIDECAR_URL)")
     args = parser.parse_args()
 
     if not args.session_id or args.session_id.startswith("openshell:"):
@@ -197,7 +197,7 @@ def main() -> int:
 
     # ── Sidecar probes ────────────────────────────────────────────────────────
     if args.sidecar:
-        print(f"\n{BOLD}3. Sidecar probes (OUTLOOK_TOKEN_PLACEHOLDER → live token)…{RESET}")
+        print(f"\n{BOLD}3. Sidecar probes (MS_GRAPH_TOKEN_PLACEHOLDER → live token)…{RESET}")
 
         code, data = _get(f"{args.sidecar.rstrip('/')}/v1.0/me",
                           headers={"Authorization": "Bearer WRONG_PLACEHOLDER", "Accept": "application/json"})
@@ -224,7 +224,7 @@ def main() -> int:
     # ── Summary ───────────────────────────────────────────────────────────────
     print(f"\n{BOLD}Done.{RESET}")
     if not args.sidecar:
-        print(f"  Tip: add --sidecar $GRAPH_SIDECAR_URL to also probe via the credential sidecar.")
+        print(f"  Tip: add --sidecar $MS_GRAPH_SIDECAR_URL to also probe via the credential sidecar.")
     print()
     return 0
 
