@@ -303,7 +303,7 @@ start_outlook_sidecar() {
   # flow through the OpenShell L7 proxy directly, which attributes them to the sidecar
   # binary path for policy enforcement. No decode-proxy hop needed here.
   local sidecar_env
-  sidecar_env="SIDECAR_LISTEN_HOST=127.0.0.1 SIDECAR_LISTEN_PORT=8766"
+  sidecar_env="SIDECAR_LISTEN_HOST=${SIDECAR_LISTEN_ADDR} SIDECAR_LISTEN_PORT=${SIDECAR_PORT}"
   if [ "$(id -u)" -eq 0 ]; then
     # shellcheck disable=SC2086
     nohup env ${sidecar_env} gosu outlook-proxy "$sidecar_bin" >>/tmp/outlook-sidecar.log 2>&1 &
@@ -316,14 +316,14 @@ start_outlook_sidecar() {
   # Wait for sidecar to be listening before bridge starts
   local attempts=0
   while [ "$attempts" -lt 15 ]; do
-    if ss -tln 2>/dev/null | grep -q "127.0.0.1:8766"; then
-      echo "[outlook-sidecar] listening on 127.0.0.1:8766" >&2
+    if ss -tln 2>/dev/null | grep -q "${SIDECAR_LISTEN_ADDR}:${SIDECAR_PORT}"; then
+      echo "[outlook-sidecar] listening on ${SIDECAR_LISTEN_ADDR}:${SIDECAR_PORT}" >&2
       return 0
     fi
     sleep 1
     attempts=$((attempts + 1))
   done
-  echo "[outlook-sidecar] WARNING: sidecar may not be ready yet (port 8766 not detected)" >&2
+  echo "[outlook-sidecar] WARNING: sidecar may not be ready yet (${SIDECAR_LISTEN_ADDR}:${SIDECAR_PORT} not detected)" >&2
 }
 
 start_outlook_bridge() {
@@ -341,7 +341,7 @@ start_outlook_bridge() {
   # HTTPS_PROXY/HTTP_PROXY remain set for any other external HTTP traffic.
   # NO_PROXY ensures the local Hermes gateway is always reached directly.
   bridge_env="HERMES_HOME=${HERMES_WRITABLE} \
-    GRAPH_SIDECAR_URL=http://127.0.0.1:8766 \
+    GRAPH_SIDECAR_URL=http://127.0.0.1:${SIDECAR_PORT} \
     HTTPS_PROXY=http://127.0.0.1:${DECODE_PROXY_PORT} \
     HTTP_PROXY=http://127.0.0.1:${DECODE_PROXY_PORT} \
     https_proxy=http://127.0.0.1:${DECODE_PROXY_PORT} \
@@ -366,6 +366,9 @@ PROXY_HOST="${NEMOCLAW_PROXY_HOST:-10.200.0.1}"
 PROXY_PORT="${NEMOCLAW_PROXY_PORT:-3128}"
 _PROXY_URL="http://${PROXY_HOST}:${PROXY_PORT}"
 _NO_PROXY_VAL="localhost,127.0.0.1,::1,${PROXY_HOST}"
+# Sidecar bind address and port — consumers always connect via 127.0.0.1 (loopback)
+SIDECAR_PORT="${SIDECAR_LISTEN_PORT:-8766}"
+SIDECAR_LISTEN_ADDR="${SIDECAR_LISTEN_HOST:-127.0.0.1}"
 export HTTP_PROXY="$_PROXY_URL"
 export HTTPS_PROXY="$_PROXY_URL"
 export NO_PROXY="$_NO_PROXY_VAL"
@@ -378,7 +381,7 @@ export no_proxy="$_NO_PROXY_VAL"
 # egress; a non-empty value here means "provider is expected to be configured."
 export OUTLOOK_CLIENT_ID="openshell:resolve:env:OUTLOOK_CLIENT_ID"
 export OUTLOOK_SESSION_UUID="openshell:resolve:env:OUTLOOK_SESSION_UUID"
-export GRAPH_SIDECAR_URL="http://127.0.0.1:8766"
+export GRAPH_SIDECAR_URL="http://127.0.0.1:${SIDECAR_PORT}"
 
 _PROXY_MARKER_BEGIN="# nemoclaw-proxy-config begin"
 _PROXY_MARKER_END="# nemoclaw-proxy-config end"
@@ -392,7 +395,7 @@ export no_proxy=\"$_NO_PROXY_VAL\"
 export HERMES_HOME=\"${HERMES_WRITABLE}\"
 export SLACK_BOT_TOKEN=\"openshell:resolve:env:SLACK_BOT_TOKEN\"
 export GITHUB_TOKEN=\"openshell:resolve:env:GITHUB_TOKEN\"
-export GRAPH_SIDECAR_URL=\"http://127.0.0.1:8766\"
+export GRAPH_SIDECAR_URL=\"http://127.0.0.1:${SIDECAR_PORT}\"
 ${_PROXY_MARKER_END}"
 
 if [ "$(id -u)" -eq 0 ]; then
