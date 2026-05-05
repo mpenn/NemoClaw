@@ -41,4 +41,4 @@ network_policies:
       # PyInstaller-compiled sidecar binary at a distinct path enables OpenShell
       # binary-path policy enforcement — only the sidecar can reach Graph and
       # the token manager.
-      - { path: /usr/local/bin/outlook-credential-sidecar }
+      - { path: /usr/local/bin/ms-graph-sidecar }

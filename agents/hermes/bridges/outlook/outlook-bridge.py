@@ -8,12 +8,12 @@
 # sender via Graph API. Also runs scheduled jobs from cron/outlook-jobs.json.
 #
 # Credential injection: all Graph API requests carry
-#   Authorization: Bearer OUTLOOK_TOKEN_PLACEHOLDER
+#   Authorization: Bearer MS_GRAPH_TOKEN_PLACEHOLDER
 # The credential sidecar (127.0.0.1:8766) intercepts these, swaps the
 # placeholder with the live delegated access token, and forwards to Graph.
 # The bridge never holds or requests a real token.
 #
-# To use without the sidecar (testing only), leave GRAPH_SIDECAR_URL unset;
+# To use without the sidecar (testing only), leave MS_GRAPH_SIDECAR_URL unset;
 # requests go directly to graph.microsoft.com — but will fail without auth.
 
 import asyncio
@@ -92,7 +92,7 @@ log = logging.getLogger(__name__)
 
 # ── Auth placeholder ─────────────────────────────────────────────────────────
 # Sentinel swapped by the credential sidecar before the request reaches Graph.
-OUTLOOK_TOKEN_PLACEHOLDER = "OUTLOOK_TOKEN_PLACEHOLDER"
+MS_GRAPH_TOKEN_PLACEHOLDER = "MS_GRAPH_TOKEN_PLACEHOLDER"
 
 # ── Mailbox config ───────────────────────────────────────────────────────────
 # OpenShell provider placeholder — the L7 proxy rewrites it at egress.
@@ -120,21 +120,21 @@ def _reply_to_address() -> str | None:
     return raw
 
 # ── Graph API base URL ───────────────────────────────────────────────────────
-# When GRAPH_SIDECAR_URL is set (e.g. http://127.0.0.1:8766), all Graph API
+# When MS_GRAPH_SIDECAR_URL is set (e.g. http://127.0.0.1:8766), all Graph API
 # requests go to the credential sidecar over plain HTTP on loopback. The sidecar
 # injects the real bearer token and forwards to graph.microsoft.com over HTTPS.
 # Without it, requests go directly to graph.microsoft.com (testing only).
-_GRAPH_SIDECAR_URL = os.environ.get("GRAPH_SIDECAR_URL", "").rstrip("/")
+_MS_GRAPH_SIDECAR_URL = os.environ.get("MS_GRAPH_SIDECAR_URL", "").rstrip("/")
 # GRAPH_BASE always ends with /v1.0 — sidecar URL is the scheme+host only.
 # Requests arrive at the sidecar as /v1.0/... paths; it forwards them to
 # https://graph.microsoft.com with the path unchanged.
-GRAPH_BASE = (f"{_GRAPH_SIDECAR_URL}/v1.0" if _GRAPH_SIDECAR_URL
+GRAPH_BASE = (f"{_MS_GRAPH_SIDECAR_URL}/v1.0" if _MS_GRAPH_SIDECAR_URL
               else "https://graph.microsoft.com/v1.0")
 
 
 def _graph_url(path_or_url: str) -> str:
     """Resolve a relative path or absolute Graph URL, routing through the sidecar."""
-    if path_or_url.startswith("https://graph.microsoft.com/v1.0") and _GRAPH_SIDECAR_URL:
+    if path_or_url.startswith("https://graph.microsoft.com/v1.0") and _MS_GRAPH_SIDECAR_URL:
         # Rewrite delta links (absolute URLs from Graph responses) to go via sidecar
         return path_or_url.replace("https://graph.microsoft.com/v1.0", GRAPH_BASE, 1)
     if path_or_url.startswith("http"):
@@ -211,7 +211,7 @@ async def wait_for_hermes() -> None:
 async def _graph_request(method: str, path_or_url: str, **kwargs) -> dict | None:
     url = _graph_url(path_or_url)
     headers = {
-        "Authorization": f"Bearer {OUTLOOK_TOKEN_PLACEHOLDER}",
+        "Authorization": f"Bearer {MS_GRAPH_TOKEN_PLACEHOLDER}",
         **kwargs.pop("headers", {}),
     }
     resp = await getattr(_client, method)(url, headers=headers, **kwargs)

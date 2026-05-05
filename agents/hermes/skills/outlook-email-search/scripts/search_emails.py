@@ -4,8 +4,8 @@
 """
 Search Microsoft Graph mailbox and return structured JSON results.
 
-Routes requests through the credential sidecar (GRAPH_SIDECAR_URL) which swaps
-Authorization: Bearer OUTLOOK_TOKEN_PLACEHOLDER for a live delegated access token.
+Routes requests through the credential sidecar (MS_GRAPH_SIDECAR_URL) which swaps
+Authorization: Bearer MS_GRAPH_TOKEN_PLACEHOLDER for a live delegated access token.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
 
-OUTLOOK_TOKEN_PLACEHOLDER = "OUTLOOK_TOKEN_PLACEHOLDER"
+MS_GRAPH_TOKEN_PLACEHOLDER = "MS_GRAPH_TOKEN_PLACEHOLDER"
 
 _WELL_KNOWN_FOLDERS = {
     "inbox": "inbox",
@@ -34,7 +34,7 @@ _WELL_KNOWN_FOLDERS = {
 
 
 def _graph_base() -> str:
-    sidecar = os.environ.get("GRAPH_SIDECAR_URL", "").rstrip("/")
+    sidecar = os.environ.get("MS_GRAPH_SIDECAR_URL", "").rstrip("/")
     return f"{sidecar}/v1.0" if sidecar else "https://graph.microsoft.com/v1.0"
 
 
@@ -69,7 +69,7 @@ def _graph_get(path: str) -> dict:
     req = urllib.request.Request(
         url,
         headers={
-            "Authorization": f"Bearer {OUTLOOK_TOKEN_PLACEHOLDER}",
+            "Authorization": f"Bearer {MS_GRAPH_TOKEN_PLACEHOLDER}",
             "Accept": "application/json",
         },
     )

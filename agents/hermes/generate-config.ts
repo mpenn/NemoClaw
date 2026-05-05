@@ -178,7 +178,7 @@ function main(): void {
   }
   if (msgChannels.includes("outlook")) {
     const sidecarPort = process.env.SIDECAR_LISTEN_PORT ?? "8766";
-    envLines.push(`GRAPH_SIDECAR_URL=http://127.0.0.1:${sidecarPort}`);
+    envLines.push(`MS_GRAPH_SIDECAR_URL=http://127.0.0.1:${sidecarPort}`);
     for (const key of ["OUTLOOK_TARGET_MAILBOX", "OUTLOOK_REPLY_TO", "OUTLOOK_ALLOWED_SENDERS"]) {
       const value = process.env[key]?.trim();
       if (value) {

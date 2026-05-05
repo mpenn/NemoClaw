@@ -1382,7 +1382,7 @@ async function applyOutlookTokenManagerEgressPolicy(sandboxName) {
     '          - allow: { method: GET, path: "/token" }',
     '          - allow: { method: GET, path: "/health" }',
     "    binaries:",
-    "      - { path: /usr/local/bin/outlook-credential-sidecar }",
+    "      - { path: /usr/local/bin/ms-graph-sidecar }",
   ].join("\n");
 
   let rawPolicy = "";
