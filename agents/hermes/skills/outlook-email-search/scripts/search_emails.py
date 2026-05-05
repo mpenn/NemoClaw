@@ -20,6 +20,14 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
+from typing import NamedTuple
+
+
+class ClientFilters(NamedTuple):
+    since: str | None       # ISO 8601 UTC lower bound (from --since)
+    until: str | None       # ISO 8601 UTC upper bound (from --until)
+    sender: str | None      # exact sender email (from --from)
+    unread_only: bool       # from --unread
 
 MS_GRAPH_TOKEN_PLACEHOLDER = "MS_GRAPH_TOKEN_PLACEHOLDER_OUTLOOK"
 
@@ -111,12 +119,12 @@ def _parse_date(value: str) -> str:
     raise ValueError(f"Cannot parse date: {value!r}. Use YYYY-MM-DD or relative like 7d, 2w, 1m.")
 
 
-def _build_params(args: argparse.Namespace) -> dict[str, str]:
+def _build_params(args: argparse.Namespace) -> tuple[dict[str, str], ClientFilters]:
     """Build OData query parameters.
 
-    $search (KQL) handles free-text and subject lookups.
-    $filter handles sender, date range, and read-status — combinable with $search.
-    $orderby is omitted when $search is present (Graph API constraint).
+    $filter is incompatible with $search in Graph API — when $search is active,
+    all filter conditions are returned in ClientFilters for client-side application.
+    $orderby is also omitted when $search is present (separate Graph API constraint).
     """
     search_terms: list[str] = []
     filters: list[str] = []
@@ -125,25 +133,27 @@ def _build_params(args: argparse.Namespace) -> dict[str, str]:
         search_terms.append(args.query)
 
     if args.subject:
-        # KQL subject: prefix scopes the search to subject field
         search_terms.append(f'subject:"{args.subject}"')
 
-    if args.sender:
-        # Exact sender match is more reliable via $filter than KQL from:
-        filters.append(f"from/emailAddress/address eq '{args.sender}'")
+    date_since = _parse_date(args.since) if args.since else None
+    date_until = _parse_date(args.until) if args.until else None
+    using_search = bool(search_terms)
 
-    if args.since:
-        filters.append(f"receivedDateTime ge {_parse_date(args.since)}")
+    if not using_search:
+        # $filter is safe when $search is absent
+        if args.sender:
+            filters.append(f"from/emailAddress/address eq '{args.sender}'")
+        if date_since:
+            filters.append(f"receivedDateTime ge {date_since}")
+        if date_until:
+            filters.append(f"receivedDateTime le {date_until}")
+        if args.unread:
+            filters.append("isRead eq false")
 
-    if args.until:
-        filters.append(f"receivedDateTime le {_parse_date(args.until)}")
-
-    if args.unread:
-        filters.append("isRead eq false")
-
-    # When domain filtering is active, over-fetch so we have enough after client-side filtering.
+    # Over-fetch when search or domain filters are active so client-side
+    # trimming has enough candidates.
     domain_filtering = args.external_only or args.domain or args.domain_not
-    fetch_top = 50 if domain_filtering else min(args.top, 50)
+    fetch_top = 50 if (domain_filtering or using_search) else min(args.top, 50)
 
     params: dict[str, str] = {
         "$select": "id,subject,from,receivedDateTime,isRead,hasAttachments,bodyPreview,conversationId",
@@ -152,14 +162,19 @@ def _build_params(args: argparse.Namespace) -> dict[str, str]:
 
     if search_terms:
         params["$search"] = f'"{" ".join(search_terms)}"'
-        # $orderby is incompatible with $search in Graph API
     else:
         params["$orderby"] = "receivedDateTime desc"
 
     if filters:
         params["$filter"] = " and ".join(filters)
 
-    return params
+    client = ClientFilters(
+        since=date_since if using_search else None,
+        until=date_until if using_search else None,
+        sender=args.sender if using_search else None,
+        unread_only=bool(args.unread) if using_search else False,
+    )
+    return params, client
 
 
 def _fetch_pages(path: str, max_pages: int) -> list[dict]:
@@ -216,12 +231,25 @@ def _apply_domain_filters(messages: list[dict], args: argparse.Namespace) -> lis
 def search_messages(args: argparse.Namespace) -> list[dict]:
     mailbox = _mailbox()
     folder = _WELL_KNOWN_FOLDERS.get(args.folder.lower(), args.folder)
-    params = _build_params(args)
+    params, client = _build_params(args)
     path = f"{mailbox}/mailFolders/{folder}/messages?{urllib.parse.urlencode(params)}"
 
     raw = _fetch_pages(path, max_pages=min(args.pages, 5))
+
+    # Client-side filters — applied when $search was active (prevents HTTP 400)
+    if client.since:
+        raw = [m for m in raw if m.get("receivedDateTime", "") >= client.since]
+    if client.until:
+        raw = [m for m in raw if m.get("receivedDateTime", "") <= client.until]
+    if client.sender:
+        needle = client.sender.lower()
+        raw = [m for m in raw
+               if m.get("from", {}).get("emailAddress", {}).get("address", "").lower() == needle]
+    if client.unread_only:
+        raw = [m for m in raw if not m.get("isRead", True)]
+
     raw = _apply_domain_filters(raw, args)
-    # Trim to the requested top count after domain filtering
+    # Trim to the requested top count after all client-side filtering
     raw = raw[: args.top]
 
     results = []
